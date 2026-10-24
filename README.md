@@ -1,6 +1,8 @@
 # 🛸 Xeno-Lens Universal
 
 > **Epistemic De-Mythologizer for the Web**
+>
+> Initial public release of Xeno-Lens Universal! Features dual-engine local/live AI translation, smart X/Reddit rate-limiting queues, and stealth UI cards.
 
 Xeno-Lens Universal is a lightweight browser extension that transforms webpage comments, articles, and social feeds (like X and Reddit) into informative alien behavioral telemetry and de-mythologized summaries. 
 
