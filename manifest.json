@@ -1,17 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Xeno-Lens Universal // Epistemic De-Mythologizer",
-  "version": "3.1.0",
-  "description": "Rewrites webpage comments, articles, and paragraphs into informative alien behavioral telemetry.",
+  "name": "Xeno-Lens Universal // Multi-Model Epistemic X-Ray",
+  "version": "4.0.0",
+  "description": "Rewrites webpage comments, articles, and paragraphs into informative alien behavioral telemetry using any LLM provider.",
   "permissions": [
-    "storage",
+    "activeTab",
     "scripting",
-    "activeTab"
+    "storage"
   ],
   "host_permissions": [
-    "https://generativelanguage.googleapis.com/*",
     "<all_urls>"
   ],
+  "action": {
+    "default_title": "Click to Toggle Xeno-Lens on this page"
+  },
   "background": {
     "service_worker": "background.js"
   },
@@ -21,6 +23,5 @@
       "js": ["content.js"],
       "run_at": "document_idle"
     }
-  ],
-  "action": {}
+  ]
 }
