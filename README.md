@@ -13,7 +13,7 @@ It uses a dual-engine architecture: a lightning-fast local heuristic engine for 
 ## ✨ Features
 
 - **Universal Webpage Scanning:** Works seamlessly across X (Twitter), Reddit, news sites, and general web articles.
-- **Dual-Engine Architecture:** Instant local heuristic parsing combined with live Gemini AI cognitive lenses.
+- **Dual-Engine Architecture:** Instant local heuristic parsing combined with live Gemini AI (or others) cognitive lenses.
 - **Smart Queue & Rate Limiting:** Built-in background worker request queuing to prevent HTTP 429 rate limits during rapid scrolling or high-density feeds.
 - **Stealth Toggle Control Bar:** Clean, non-intrusive floating control widget with live decode counters and quick API key configuration.
 - **Original Text Fallback:** Tap any translated card to instantly reveal or hide the original human text underneath.
