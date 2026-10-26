@@ -42,6 +42,15 @@ Xeno-Lens works instantly out of the box using local analysis. To unlock live AI
 
 ---
 
+How to Switch Models on Any Webpage:
+Reload the extension in edge://extensions and refresh your X or web tab.
+
+Click the ⚙️ GEMINI (or ⚙️ SET MODEL) button on the bottom-right pill.
+
+Choose Google Gemini, OpenAI, Anthropic, xAI Grok, OpenRouter, Groq, or Local Ollama, enter the model name and API key, and click Save & Re-Scan Page. All visible cards immediately re-translate using the new model and display the model's badge (e.g., 🛸 XAI (grok-3-mini) or 🛸 ANTHROPIC (claude-3-5-haiku-latest)).
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Manifest V3** extension architecture
