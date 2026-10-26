@@ -6,7 +6,7 @@
 
 Xeno-Lens Universal is a lightweight browser extension that transforms webpage comments, articles, and social feeds (like X and Reddit) into informative alien behavioral telemetry and de-mythologized summaries. 
 
-It uses a dual-engine architecture: a lightning-fast local heuristic engine for zero-cost analysis, with optional live AI interpretation powered by the Gemini API.
+It uses a dual-engine architecture: a lightning-fast local heuristic engine for zero-cost analysis, with optional live AI interpretation powered by the Gemini API (can be switched to other model families as well).
 
 ---
 
