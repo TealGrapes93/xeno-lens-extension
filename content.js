@@ -1,6 +1,49 @@
+Your three screenshots pinpoint the exact DOM/CSS mechanics causing each of those three issues on Reddit and X/Twitter:
+
+### Root-Cause Diagnosis from Your Screenshots
+
+1. **Why Words Get Cut Off at the Bottom on Reddit (Screenshot 1)**:
+   - Look closely at your first screenshot: the bottom half of the line `Incentive Vector: To evoke shared relatable experiences...` is sliced horizontally right above the `46` upvote button.
+   - **Cause**: On Reddit feeds, post previews sit inside a container with `max-height` / `-webkit-line-clamp` and `overflow: hidden` so long posts don't stretch the feed card. Because our telemetry card was inserted *inside* that clamped container (`element.parentNode.insertBefore(...)`), the card pushed the container past its `max-height` and Reddit's `overflow: hidden` clipped the bottom of our card!
+   - **Fix**: Whenever a card is inserted, we walk up its parent containers and automatically unlock any `max-height`, `height`, `-webkit-line-clamp`, or `overflow: hidden` constraints (`unlockAncestors(el)`), ensuring the container always expands cleanly to fit the telemetry card.
+
+2. **Why `MODE: REPLACE` Didn't Hide the Original Text on Reddit (Screenshot 1)**:
+   - **Cause**: Two bugs interacted here:
+     1. In `applyElementViewState`, we wrote `sourceEl.style.display = 'none'` *without* `!important`. Reddit's Shreddit web components use CSS rules with `display: block !important` or `display: -webkit-box !important`, which overrode our non-important inline style.
+     2. When a post had multiple `<p>` tags inside a single comment container, or when a text block was a child of a larger flex container, setting `sourceEl.style.display = 'none'` without `!important` failed to collapse it.
+   - **Fix**: We now apply `sourceEl.style.setProperty('display', 'none', 'important')` in `replace` mode, and properly restore the element's original inline display state when switching back to `split` mode or clicking `Toggle Source`.
+
+3. **Why the Right Sidebar / Short Comments Column Didn't Show Cards on Reddit & X (Screenshots 2 & 3)**:
+   - Look at Screenshot 2 (`RECENT POSTS` sidebar on Reddit: *"Connecting to wifi in my room, but two different routers?"*, *"I propose we call all legacy human written code MEATSLOP"*) and Screenshot 3 (short tweets like *"Investigate your wiener"*, *"Bro how intelligent is this fucking internal model??!!!!!!?!!"* and the right column on X).
+   - **Cause**: In v7.2, we added four filters that blocked all of these:
+     1. We added `ASIDE` and `H1`–`H6` to `NON_PROSE_ANCESTORS`—and both Reddit's Recent Posts sidebar and X's right column live inside `<aside>` tags, with post titles inside `<h3>`/`<a>` tags!
+     2. We required `N >= 10` words and `text.length >= 55` characters—which rejected short tweets like *"Bro how intelligent is this fucking internal model??!!!!!!?!!"* (7 words, 61 chars) and *"Investigate your wiener"* (3 words).
+     3. We rejected blocks where `anchorChars / text.length > 0.5`—and every single post in Reddit's Recent Posts sidebar is wrapped in an `<a href="...">` link!
+     4. Reddit also uses Shadow DOM web components (`<shreddit-comment>`, `<shreddit-post>`, `<faceplate-tracker>`) which require recursive `shadowRoot` traversal.
+
+---
+
+### Updated `content.js` (v7.3 — Fixes All 3 Issues)
+
+Replace your `content.js` with the version below and click **Reload ($\circlearrowright$)** in `chrome://extensions`.
+
+What is fixed in `content.js` v7.3:
+- **Zero Clipped Text on Reddit**: Automatically unlocks ancestor `overflow: hidden`, `max-height`, and `-webkit-line-clamp` so cards never get sliced off above the upvote buttons.
+- **`MODE: REPLACE` Works Everywhere (Including Reddit)**: Uses `style.setProperty('display', 'none', 'important')` to override Reddit's `!important` stylesheet rules, and cleanly toggles individual sources via `Toggle Source`.
+- **Recognizes Sidebars, Short Tweets, and Shadow DOM Comments**:
+  - Removed `ASIDE` and `H1`–`H6` from the blacklist so Reddit's `RECENT POSTS` sidebar and X's right-rail cards are scanned.
+  - Allows linked post titles/cards in sidebars while still ignoring 1-2 word navigation buttons (`Home`, `Explore`, `Notifications`).
+  - Lowered the minimum threshold to **4 words / 20 characters** so punchy tweets and short Reddit comments are captured.
+  - Pierces open `shadowRoot` trees automatically (`<shreddit-comment>`, etc.).
+
+```javascript
 /**
- * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.2
- * Excludes right-rail sidebars (<aside>), headings, and short UI fragments.
+ * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.3
+ * Fixes:
+ * 1. Unlocks parent overflow/max-height/line-clamp on Reddit so cards are never clipped at the bottom.
+ * 2. Enforces `display: none !important` in REPLACE mode so Reddit/X CSS cannot override it.
+ * 3. Scans <aside> sidebars (Reddit Recent Posts, X What's Happening), short tweets/comments (>= 4 words),
+ *    and pierces Web Component Shadow DOMs.
  */
 
 (function () {
@@ -90,7 +133,7 @@
     }
 
     computeYulesK(tfMap, N) {
-      if (N <= 5) return 0;
+      if (N <= 4) return 0;
       const spectrum = new Map();
       for (const freq of tfMap.values()) {
         spectrum.set(freq, (spectrum.get(freq) || 0) + 1);
@@ -106,8 +149,8 @@
       const clean = rawText.replace(/\s+/g, ' ').trim();
       const tokens = this.tokenize(clean);
       const N = tokens.length;
-      // Require at least 10 substantive tokens to avoid tagging short labels or fragments
-      if (N < 10) return null;
+      // Support short tweets, sidebar post titles, and punchy comments (>= 4 words)
+      if (N < 4) return null;
 
       const localTF = new Map();
       for (const t of tokens) {
@@ -134,11 +177,11 @@
       this.ingestTokens(tokens);
 
       surprisalValues.sort((a, b) => a - b);
-      const q55 = surprisalValues[Math.floor(surprisalValues.length * 0.55)] || 0;
+      const q50 = surprisalValues[Math.floor(surprisalValues.length * 0.5)] || 0;
 
       const rankedSalient = [];
       for (const [term, stats] of tokenWeights.entries()) {
-        if (stats.surprisal >= q55 && term.length > 2) {
+        if (stats.surprisal >= q50 && term.length > 2) {
           rankedSalient.push({ term, score: stats.weight });
         }
       }
@@ -166,7 +209,7 @@
             tokens: sTokens,
             vec,
             norm: Math.sqrt(normSq) || 1,
-            priorScore: sTokens.length >= 4 ? infoSum / Math.pow(sTokens.length, 0.75) : 0
+            priorScore: sTokens.length >= 3 ? infoSum / Math.pow(sTokens.length, 0.75) : 0
           };
         });
 
@@ -206,7 +249,7 @@
         let bestIdx = 0;
         let bestVal = -Infinity;
         for (let i = 0; i < K; i++) {
-          if (sentNodes[i].tokens.length >= 4 && centrality[i] > bestVal) {
+          if (sentNodes[i].tokens.length >= 3 && centrality[i] > bestVal) {
             bestVal = centrality[i];
             bestIdx = i;
           }
@@ -229,19 +272,19 @@
   }
 
   // ============================================================================
-  // 2. DOM PROSE DISCOVERY ENGINE (EXCLUDES SIDEBARS & ACCORDION HEADERS)
+  // 2. DOM PROSE & SIDEBAR DISCOVERY ENGINE (INCLUDES SIDEBARS & SHORT POSTS)
   // ============================================================================
+  // Note: ASIDE and H1-H6 are intentionally allowed so sidebar posts/comments and feed titles work!
   const NON_PROSE_ANCESTORS = new Set([
     'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'MATH',
     'CODE', 'PRE', 'KBD', 'SAMP', 'VAR', 'INPUT', 'TEXTAREA', 'SELECT',
     'BUTTON', 'LABEL', 'OPTION', 'OPTGROUP', 'DATALIST', 'OUTPUT',
     'AUDIO', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED', 'HEAD', 'TITLE', 'META',
-    'NAV', 'FOOTER', 'HEADER', 'ASIDE', 'DIALOG', 'MENU', 'THEAD', 'TFOOT',
-    'SUMMARY', 'FIGCAPTION', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'
+    'NAV', 'FOOTER', 'HEADER', 'DIALOG', 'MENU', 'THEAD', 'TFOOT'
   ]);
 
   const INLINE_CONTAINERS = new Set([
-    'SPAN', 'A', 'EM', 'STRONG', 'B', 'I', 'U', 'S', 'SMALL', 'SUB', 'SUP',
+    'SPAN', 'EM', 'STRONG', 'B', 'I', 'U', 'S', 'SMALL', 'SUB', 'SUP',
     'MARK', 'ABBR', 'CITE', 'DFN', 'TIME', 'FONT', 'BDI', 'BDO', 'Q', 'RUBY', 'WBR'
   ]);
 
@@ -255,8 +298,16 @@
       if (curr.hasAttribute('data-xeno-host') || curr.isContentEditable) return null;
       if (NON_PROSE_ANCESTORS.has(curr.tagName)) return null;
       const role = curr.getAttribute('role');
-      if (role && /^(navigation|banner|complementary|menubar|menu|toolbar|tablist|dialog|alertdialog|search|heading)$/i.test(role)) {
+      if (role && /^(navigation|banner|menubar|menu|toolbar|tablist|dialog|alertdialog|search)$/i.test(role)) {
         return null;
+      }
+      // If text is inside an <a> tag that is a standalone card/post link (like Reddit Recent Posts), use the <a> or its heading container
+      if (curr.tagName === 'A') {
+        const parent = curr.parentElement;
+        if (parent && /^(H1|H2|H3|H4|H5|H6|P|LI|DIV)$/i.test(parent.tagName) && (parent.innerText || '').trim() === (curr.innerText || '').trim()) {
+          return parent;
+        }
+        return curr;
       }
       if (!INLINE_CONTAINERS.has(curr.tagName)) {
         return curr;
@@ -271,29 +322,41 @@
     if (NON_PROSE_ANCESTORS.has(el.tagName)) return null;
     if (el.hasAttribute('data-xeno-host') || el.closest('[data-xeno-host]')) return null;
 
+    // Do not process if an ancestor or descendant is already processed
     let parent = el.parentElement;
     while (parent && parent !== document.body) {
       if (processedBlocks.has(parent) || NON_PROSE_ANCESTORS.has(parent.tagName)) return null;
       const role = parent.getAttribute('role');
-      if (role && /^(navigation|complementary|banner|menu|toolbar|dialog)$/i.test(role)) return null;
+      if (role && /^(navigation|banner|menubar|menu|toolbar|dialog)$/i.test(role)) return null;
       parent = parent.parentElement;
     }
 
-    if (el.tagName !== 'P' && el.tagName !== 'BLOCKQUOTE' && el.tagName !== 'LI') {
-      if (el.querySelector('p, blockquote, article, section, ul, ol, table')) {
+    if (el.querySelector('[data-xeno-source="1"]')) return null;
+
+    // If this element contains distinct child paragraphs or list items, let the children be processed individually
+    if (!/^(P|BLOCKQUOTE|H1|H2|H3|H4|H5|H6|A)$/i.test(el.tagName)) {
+      if (el.querySelector('p, blockquote, article, ul, ol, table, [data-testid="tweetText"]')) {
         return null;
       }
     }
 
     const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (text.length < 55) return null;
+    if (text.length < 20) return null;
 
-    const anchors = el.getElementsByTagName('a');
-    let anchorChars = 0;
-    for (let i = 0; i < anchors.length; i++) {
-      anchorChars += (anchors[i].textContent || '').replace(/\s+/g, ' ').trim().length;
+    // Reject pure metadata counters like "11 upvotes · 9 comments" or "728 upvotes · 362 comments"
+    if (/^(\d+[.,]?\d*[km]?\s*(upvotes?|comments?|views?|likes?|reposts?|retweets?|hours?|days?|ago|\u00b7|\s))+$/i.test(text)) {
+      return null;
     }
-    if (anchorChars / text.length > 0.5) return null;
+
+    // Reject multi-link navigation bars (where 4+ separate links make up >75% of the block)
+    const anchors = el.getElementsByTagName('a');
+    if (anchors.length >= 4) {
+      let anchorChars = 0;
+      for (let i = 0; i < anchors.length; i++) {
+        anchorChars += (anchors[i].textContent || '').replace(/\s+/g, ' ').trim().length;
+      }
+      if (anchorChars / text.length > 0.75) return null;
+    }
 
     return text;
   }
@@ -302,8 +365,11 @@
     if (!root) return [];
     const candidateSet = new Set();
 
+    // Pass 1: Direct semantic prose, social comments, and sidebar post items
     if (typeof root.querySelectorAll === 'function') {
-      const semanticNodes = root.querySelectorAll('p, blockquote, article li, dd');
+      const semanticNodes = root.querySelectorAll(
+        'p, blockquote, article li, dd, [data-testid="tweetText"], [slot="comment"], [slot="text-body"], [slot="title"], aside h3, aside a[href*="/comments/"]'
+      );
       for (let i = 0; i < semanticNodes.length; i++) {
         const el = semanticNodes[i];
         if (!processedBlocks.has(el) && !NON_PROSE_ANCESTORS.has(el.tagName)) {
@@ -312,9 +378,10 @@
       }
     }
 
+    // Pass 2: Bottom-up TextNode discovery across Main DOM & Shadow DOM
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
-        if (!node.nodeValue || node.nodeValue.trim().length < 35) {
+        if (!node.nodeValue || node.nodeValue.trim().length < 20) {
           return NodeFilter.FILTER_SKIP;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -329,19 +396,61 @@
       }
     }
 
+    // Pass 3: Pierce open Shadow DOMs (Reddit Shreddit Web Components)
+    if (typeof root.querySelectorAll === 'function') {
+      const allEls = root.querySelectorAll('*');
+      for (let i = 0; i < allEls.length; i++) {
+        if (allEls[i].shadowRoot && !allEls[i].hasAttribute('data-xeno-host')) {
+          const shadowCandidates = discoverProseBlocks(allEls[i].shadowRoot);
+          for (let j = 0; j < shadowCandidates.length; j++) {
+            candidateSet.add(shadowCandidates[j].element);
+          }
+        }
+      }
+    }
+
     const verified = [];
     for (const block of candidateSet) {
       const validText = evaluateBlockMetrics(block);
       if (!validText) continue;
 
       const rect = block.getBoundingClientRect();
-      // Require minimum 200px width to ignore narrow sidebar columns
-      if (rect.width >= 200 && rect.height >= 18) {
+      // 115px minimum width allows narrow right-hand sidebars (Reddit Recent Posts & X What's Happening)
+      if (rect.width >= 115 && rect.height >= 14) {
         verified.push({ element: block, text: validText });
       }
     }
 
     return verified;
+  }
+
+  /**
+   * Unlocks ancestor CSS max-height / line-clamp / overflow:hidden on Reddit & X
+   * so injected telemetry cards never get sliced off at the bottom.
+   */
+  function unlockClippingAncestors(el) {
+    let curr = el;
+    let depth = 0;
+    while (curr && curr !== document.body && depth < 7) {
+      if (curr.nodeType === Node.ELEMENT_NODE) {
+        const comp = window.getComputedStyle(curr);
+        if (
+          comp.webkitLineClamp !== 'none' ||
+          (comp.maxHeight && comp.maxHeight !== 'none' && parseFloat(comp.maxHeight) < 800) ||
+          comp.overflowY === 'hidden' ||
+          comp.overflow === 'hidden'
+        ) {
+          curr.style.setProperty('max-height', 'none', 'important');
+          curr.style.setProperty('-webkit-line-clamp', 'unset', 'important');
+          curr.style.setProperty('line-clamp', 'unset', 'important');
+          if (comp.overflow === 'hidden' || comp.overflowY === 'hidden') {
+            curr.style.setProperty('overflow', 'visible', 'important');
+          }
+        }
+      }
+      curr = curr.parentElement || (curr.getRootNode && curr.getRootNode().host);
+      depth++;
+    }
   }
 
   // ============================================================================
@@ -354,13 +463,18 @@
       border-left: 3.5px solid #38bdf8;
       border-radius: 8px;
       padding: 10px 13px;
-      margin: 8px 0 14px 0;
+      margin: 8px 0 12px 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
-      line-height: 1.45;
+      line-height: 1.48;
       color: #f1f5f9;
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
       transition: border-color 0.2s ease;
       box-sizing: border-box;
+      height: auto !important;
+      max-height: none !important;
+      overflow: visible !important;
+      white-space: normal !important;
+      word-break: break-word !important;
     }
     .card[data-tier="high"] { border-left-color: #34d399; }
     .card[data-tier="mid"]  { border-left-color: #38bdf8; }
@@ -369,13 +483,13 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       margin-bottom: 6px;
       flex-wrap: wrap;
     }
     .badge {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 10.5px;
+      font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.04em;
       color: #38bdf8;
@@ -386,9 +500,9 @@
     .metrics {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 10px;
+      font-size: 9.5px;
       color: #64748b;
     }
     .toggle-orig {
@@ -396,20 +510,24 @@
       cursor: pointer;
       color: #94a3b8;
       background: #1e293b;
-      padding: 1px 6px;
+      padding: 2px 6px;
       border-radius: 4px;
       font-size: 9.5px;
     }
     .toggle-orig:hover { color: #f8fafc; background: #334155; }
     .claim {
       color: #f8fafc;
-      font-size: 13px;
+      font-size: 12.5px;
       font-weight: 500;
       margin-bottom: 5px;
+      white-space: normal !important;
+      overflow: visible !important;
     }
     .motive {
       color: #94a3b8;
       font-size: 11.5px;
+      white-space: normal !important;
+      overflow: visible !important;
     }
   `;
 
@@ -455,7 +573,7 @@
         }
       }
     },
-    { rootMargin: '240px 0px' }
+    { rootMargin: '260px 0px' }
   );
 
   function dispatchLiveProbe(hostEl) {
@@ -484,6 +602,7 @@
           meta.badgeEl.textContent = `🛸 ${t.archetype} · SNR ${snrPct}% [${res.modelUsed}]`;
           meta.claimEl.textContent = `Proposition: ${t.claim}`;
           meta.motiveEl.textContent = `Incentive Vector: ${t.motive}`;
+          unlockClippingAncestors(hostEl);
         } else {
           meta.badgeEl.textContent = `🛸 STATISTICAL PROPOSITION (${res.error || 'LOCAL'})`;
         }
@@ -491,20 +610,37 @@
     );
   }
 
+  /**
+   * Enforces REPLACE vs SPLIT mode using `!important` so Reddit's Shreddit CSS cannot override it.
+   */
   function applyElementViewState(sourceEl, hostEl) {
+    const meta = blockToCardMap.get(hostEl);
     if (!state.lensActive) {
       hostEl.style.setProperty('display', 'none', 'important');
-      sourceEl.style.display = '';
-      sourceEl.style.opacity = '';
+      sourceEl.style.removeProperty('display');
+      sourceEl.style.removeProperty('opacity');
       return;
     }
+
     hostEl.style.setProperty('display', 'block', 'important');
+
+    // Respect manual per-card Toggle Source override if user clicked it
+    if (meta && meta.manualSourceOverride !== null) {
+      if (meta.manualSourceOverride) {
+        sourceEl.style.removeProperty('display');
+        sourceEl.style.setProperty('opacity', '1', 'important');
+      } else {
+        sourceEl.style.setProperty('display', 'none', 'important');
+      }
+      return;
+    }
+
     if (state.viewMode === 'replace') {
-      sourceEl.style.display = 'none';
-      sourceEl.style.opacity = '';
+      sourceEl.style.setProperty('display', 'none', 'important');
+      sourceEl.style.removeProperty('opacity');
     } else {
-      sourceEl.style.display = '';
-      sourceEl.style.opacity = '0.78';
+      sourceEl.style.removeProperty('display');
+      sourceEl.style.setProperty('opacity', '0.78', 'important');
     }
   }
 
@@ -514,10 +650,23 @@
     if (!stats) return;
 
     processedBlocks.add(element);
+    element.setAttribute('data-xeno-source', '1');
 
     const hostEl = document.createElement('div');
     hostEl.setAttribute('data-xeno-host', '1');
-    hostEl.style.cssText = 'display: block !important; width: 100% !important; margin: 6px 0 !important; padding: 0 !important; border: none !important; background: transparent !important;';
+    hostEl.style.cssText = `
+      display: block !important;
+      width: 100% !important;
+      height: auto !important;
+      max-height: none !important;
+      overflow: visible !important;
+      margin: 6px 0 !important;
+      padding: 0 !important;
+      border: none !important;
+      background: transparent !important;
+      position: relative !important;
+      z-index: 2 !important;
+    `;
     const shadow = hostEl.attachShadow({ mode: 'closed' });
 
     const styleEl = document.createElement('style');
@@ -543,12 +692,6 @@
     const toggleOrigBtn = document.createElement('button');
     toggleOrigBtn.className = 'toggle-orig';
     toggleOrigBtn.textContent = 'Toggle Source';
-    toggleOrigBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const isHidden = element.style.display === 'none';
-      element.style.display = isHidden ? '' : 'none';
-      element.style.opacity = '1';
-    });
 
     metricsEl.append(statSpan, toggleOrigBtn);
     headerEl.append(badgeEl, metricsEl);
@@ -562,12 +705,12 @@
     motiveEl.textContent =
       stats.salientTerms.length > 0
         ? `High-Information Terms: ${stats.salientTerms.join(' · ')}`
-        : 'Uniform lexical distribution';
+        : 'Compact lexical assertion';
 
     cardEl.append(headerEl, claimEl, motiveEl);
     shadow.append(styleEl, cardEl);
 
-    blockToCardMap.set(hostEl, {
+    const metaObj = {
       sourceEl: element,
       hostEl,
       cardEl,
@@ -575,12 +718,23 @@
       claimEl,
       motiveEl,
       rawText: text,
-      probed: false
-    });
+      probed: false,
+      manualSourceOverride: null
+    };
+    blockToCardMap.set(hostEl, metaObj);
     activeCards.add(hostEl);
 
-    applyElementViewState(element, hostEl);
+    toggleOrigBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const currentlyHidden = window.getComputedStyle(element).display === 'none';
+      metaObj.manualSourceOverride = currentlyHidden;
+      applyElementViewState(element, hostEl);
+    });
+
     element.parentNode?.insertBefore(hostEl, element.nextSibling);
+    unlockClippingAncestors(element);
+    applyElementViewState(element, hostEl);
     viewportObserver.observe(hostEl);
 
     state.decodedCount++;
@@ -605,7 +759,7 @@
       pendingRoots.clear();
 
       for (const r of roots) {
-        if (r && r.isConnected) {
+        if (r && (r.isConnected || r === document.body)) {
           const candidates = discoverProseBlocks(r);
           for (let i = 0; i < candidates.length; i++) {
             renderTelemetryCard(candidates[i]);
@@ -615,7 +769,7 @@
     };
 
     if (typeof requestIdleCallback === 'function') {
-      requestIdleCallback(executePass, { timeout: 300 });
+      requestIdleCallback(executePass, { timeout: 250 });
     } else {
       setTimeout(executePass, 25);
     }
@@ -912,89 +1066,4 @@
 
     toggleBtn.addEventListener('click', toggleLensState);
 
-    modeBtn.addEventListener('click', () => {
-      state.viewMode = state.viewMode === 'split' ? 'replace' : 'split';
-      safeSendMessage({
-        type: 'XENO_SAVE_CONFIG',
-        config: { viewMode: state.viewMode }
-      });
-      refreshAllCardViews();
-      updateHudCounters();
-    });
-
-    updateHudCounters();
-  }
-
-  function updateHudCounters() {
-    if (!hudRefs) return;
-    hudRefs.toggleBtn.className = `pill ${state.lensActive ? 'toggle-on' : 'toggle-off'}`;
-    hudRefs.toggleBtn.textContent = state.lensActive
-      ? `🛸 XENO: ON (${state.decodedCount})`
-      : `🧠 RAW (${state.decodedCount})`;
-    hudRefs.modeBtn.textContent = state.viewMode === 'replace' ? 'MODE: REPLACE' : 'MODE: SPLIT';
-    hudRefs.cfgBtn.textContent = `⚙️ ${state.provider.toUpperCase()}`;
-  }
-
-  function refreshAllCardViews() {
-    for (const hostEl of activeCards) {
-      const meta = blockToCardMap.get(hostEl);
-      if (meta) {
-        applyElementViewState(meta.sourceEl, hostEl);
-      }
-    }
-  }
-
-  function toggleLensState() {
-    state.lensActive = !state.lensActive;
-    safeSendMessage({
-      type: 'XENO_SAVE_CONFIG',
-      config: { lensActive: state.lensActive }
-    });
-    refreshAllCardViews();
-    updateHudCounters();
-    if (state.lensActive) {
-      scheduleIdleScan(document.body);
-    }
-  }
-
-  try {
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-      chrome.runtime.onMessage.addListener((msg) => {
-        if (msg?.type === 'XENO_TOGGLE_LENS') {
-          toggleLensState();
-        }
-      });
-    }
-  } catch {}
-
-  mountHud();
-  scheduleIdleScan(document.body);
-
-  safeSendMessage({ type: 'XENO_GET_CONFIG' }, (res) => {
-    if (res?.ok && res.config) {
-      state = { ...state, ...res.config, decodedCount: state.decodedCount };
-      refreshAllCardViews();
-      updateHudCounters();
-      if (state.lensActive && (state.apiKey || state.provider === 'ollama')) {
-        for (const hostEl of activeCards) {
-          viewportObserver.observe(hostEl);
-        }
-      }
-    }
-  });
-
-  const domObserver = new MutationObserver((mutations) => {
-    if (!state.lensActive) return;
-    for (const m of mutations) {
-      for (const added of m.addedNodes) {
-        if (added.nodeType === Node.ELEMENT_NODE && !added.hasAttribute('data-xeno-host')) {
-          scheduleIdleScan(added);
-        }
-      }
-    }
-  });
-
-  if (document.body) {
-    domObserver.observe(document.body, { childList: true, subtree: true });
-  }
-})();
+    modeBtn.ad
