@@ -1,23 +1,22 @@
 /**
- * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.4
+ * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.5
  * Fixes:
- * 1. Hot-Reload Cleanup: Automatically cleans up orphaned HUD/cards from prior extension reloads
- *    instead of exiting early when `#xeno-telemetry-hud-host` is already in the DOM.
- * 2. Crash-proof ShadowRoot boundary traversal.
- * 3. Unlocks Reddit clipping containers, enforces REPLACE mode with `!important`, and scans sidebars/short posts.
+ * 1. Eliminates duplicate cards on nested <a> / <h3> elements via containment + text-fingerprint deduplication.
+ * 2. Eliminates narrow vertical "noodle" cards inside horizontal Flexbox rows (flex: 0 0 100% + safe block anchor insertion).
+ * 3. Excludes absolute-positioned image/video overlay badges on X/Twitter ([data-testid="card.wrapper"] overlays) so cards never float over images.
+ * 4. Unlocks Reddit text line-clamps cleanly without breaking outer media card boundaries.
  */
 
 (function () {
   'use strict';
 
-  // If the current active instance is already alive and connected to a valid extension runtime, do not double-run
+  // Clean up any prior instance on hot-reload
   if (window.__XENO_ACTIVE_CLEANUP__) {
     try {
       window.__XENO_ACTIVE_CLEANUP__();
     } catch {}
   }
 
-  // Remove any orphaned HUD or cards left over from a previous extension reload
   document.querySelectorAll('#xeno-telemetry-hud-host, [data-xeno-host]').forEach((el) => {
     try { el.remove(); } catch {}
   });
@@ -132,7 +131,7 @@
       const clean = rawText.replace(/\s+/g, ' ').trim();
       const tokens = this.tokenize(clean);
       const N = tokens.length;
-      if (N < 4) return null;
+      if (N < 5) return null;
 
       const localTF = new Map();
       for (const t of tokens) {
@@ -261,17 +260,47 @@
     'CODE', 'PRE', 'KBD', 'SAMP', 'VAR', 'INPUT', 'TEXTAREA', 'SELECT',
     'BUTTON', 'LABEL', 'OPTION', 'OPTGROUP', 'DATALIST', 'OUTPUT',
     'AUDIO', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED', 'HEAD', 'TITLE', 'META',
-    'NAV', 'FOOTER', 'HEADER', 'DIALOG', 'MENU', 'THEAD', 'TFOOT'
+    'NAV', 'FOOTER', 'HEADER', 'DIALOG', 'MENU', 'THEAD', 'TFOOT', 'FIGURE'
   ]);
 
   const INLINE_CONTAINERS = new Set([
-    'SPAN', 'EM', 'STRONG', 'B', 'I', 'U', 'S', 'SMALL', 'SUB', 'SUP',
+    'SPAN', 'A', 'EM', 'STRONG', 'B', 'I', 'U', 'S', 'SMALL', 'SUB', 'SUP',
     'MARK', 'ABBR', 'CITE', 'DFN', 'TIME', 'FONT', 'BDI', 'BDO', 'Q', 'RUBY', 'WBR'
   ]);
 
   const processedBlocks = new WeakSet();
   const blockToCardMap = new WeakMap();
   const activeCards = new Set();
+
+  /**
+   * Checks whether an element is inside an absolute-positioned media overlay or X card preview
+   */
+  function isInsideMediaOverlayOrPreviewCard(el) {
+    let curr = el;
+    let depth = 0;
+    while (curr && curr !== document.body && depth < 8) {
+      if (curr.nodeType === Node.ELEMENT_NODE) {
+        const testId = curr.getAttribute('data-testid') || '';
+        // Skip X/Twitter embedded media link cards and video players so we don't float cards over photos/videos
+        if (
+          testId === 'card.wrapper' ||
+          testId === 'card.layoutLarge.media' ||
+          testId === 'card.layoutSmall.media' ||
+          testId === 'videoPlayer' ||
+          testId === 'tweetPhoto'
+        ) {
+          return true;
+        }
+        const comp = window.getComputedStyle(curr);
+        if (comp.position === 'absolute') {
+          return true;
+        }
+      }
+      curr = curr.parentElement;
+      depth++;
+    }
+    return false;
+  }
 
   function findNearestProseBlock(textNode) {
     let curr = textNode.parentElement;
@@ -282,18 +311,6 @@
       const role = curr.getAttribute('role');
       if (role && /^(navigation|banner|menubar|menu|toolbar|tablist|dialog|alertdialog|search)$/i.test(role)) {
         return null;
-      }
-      if (curr.tagName === 'A') {
-        const parent = curr.parentElement;
-        if (
-          parent &&
-          parent.tagName &&
-          /^(H1|H2|H3|H4|H5|H6|P|LI|DIV)$/i.test(parent.tagName) &&
-          (parent.innerText || '').trim() === (curr.innerText || '').trim()
-        ) {
-          return parent;
-        }
-        return curr;
       }
       if (!INLINE_CONTAINERS.has(curr.tagName)) {
         return curr;
@@ -308,7 +325,9 @@
       if (!el || !el.tagName || processedBlocks.has(el)) return null;
       if (NON_PROSE_ANCESTORS.has(el.tagName)) return null;
       if (el.hasAttribute('data-xeno-host') || (el.closest && el.closest('[data-xeno-host]'))) return null;
+      if (isInsideMediaOverlayOrPreviewCard(el)) return null;
 
+      // Ensure no ancestor or descendant is already processed
       let parent = el.parentElement;
       while (parent && parent !== document.body) {
         if (processedBlocks.has(parent) || (parent.tagName && NON_PROSE_ANCESTORS.has(parent.tagName))) return null;
@@ -319,15 +338,16 @@
 
       if (el.querySelector && el.querySelector('[data-xeno-source="1"]')) return null;
 
-      if (!/^(P|BLOCKQUOTE|H1|H2|H3|H4|H5|H6|A)$/i.test(el.tagName)) {
-        if (el.querySelector && el.querySelector('p, blockquote, article, ul, ol, table, [data-testid="tweetText"]')) {
+      if (!/^(P|BLOCKQUOTE|H1|H2|H3|H4|H5|H6)$/i.test(el.tagName)) {
+        if (el.querySelector && el.querySelector('p, blockquote, article, ul, ol, table, h1, h2, h3, [data-testid="tweetText"]')) {
           return null;
         }
       }
 
       const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (text.length < 20) return null;
+      if (text.length < 22) return null;
 
+      // Reject social counter lines ("11 upvotes · 9 comments", "247 upvotes", etc.)
       if (/^(\d+[.,]?\d*[km]?\s*(upvotes?|comments?|views?|likes?|reposts?|retweets?|hours?|days?|ago|\u00b7|\s))+$/i.test(text)) {
         return null;
       }
@@ -352,7 +372,7 @@
     try {
       if (typeof root.querySelectorAll === 'function') {
         const semanticNodes = root.querySelectorAll(
-          'p, blockquote, article li, dd, [data-testid="tweetText"], [slot="comment"], [slot="text-body"], [slot="title"], aside h3, aside a[href*="/comments/"]'
+          'p, blockquote, article li, dd, [data-testid="tweetText"], [slot="comment"], [slot="text-body"], aside h3'
         );
         for (let i = 0; i < semanticNodes.length; i++) {
           const el = semanticNodes[i];
@@ -364,7 +384,7 @@
 
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
         acceptNode(node) {
-          if (!node.nodeValue || node.nodeValue.trim().length < 20) {
+          if (!node.nodeValue || node.nodeValue.trim().length < 22) {
             return NodeFilter.FILTER_SKIP;
           }
           return NodeFilter.FILTER_ACCEPT;
@@ -395,14 +415,26 @@
     const candidateSet = new Set();
     collectCandidatesFromRoot(root, candidateSet);
 
+    // Deduplicate nested candidates: if Candidate A contains Candidate B, discard Candidate A so we only process the leaf element once
+    const rawList = Array.from(candidateSet);
+    const leafList = rawList.filter((elA) => {
+      for (let i = 0; i < rawList.length; i++) {
+        const elB = rawList[i];
+        if (elA !== elB && elA.contains && elA.contains(elB)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
     const verified = [];
-    for (const block of candidateSet) {
+    for (const block of leafList) {
       const validText = evaluateBlockMetrics(block);
       if (!validText) continue;
 
       try {
         const rect = block.getBoundingClientRect();
-        if (rect.width >= 115 && rect.height >= 14) {
+        if (rect.width >= 120 && rect.height >= 14) {
           verified.push({ element: block, text: validText });
         }
       } catch {}
@@ -411,28 +443,54 @@
     return verified;
   }
 
-  function unlockClippingAncestors(el) {
+  /**
+   * Finds a safe block-level insertion anchor so a card is NEVER inserted inside a horizontal
+   * `flex-direction: row` container (which caused the skinny vertical noodle card in Reddit's sidebar)
+   * or inside an `<a>` tag.
+   */
+  function findSafeInsertionTarget(el) {
+    let target = el;
+    // If element is inside an <a> tag (like Reddit Recent Posts), step outside the <a> tag first
+    const closestAnchor = target.closest && target.closest('a');
+    if (closestAnchor && closestAnchor.parentElement) {
+      target = closestAnchor;
+    }
+
+    // If target's parent is a horizontal flex row (`display: flex; flex-direction: row`),
+    // either enable `flex-wrap: wrap` on the parent so our 100%-width card drops to a new row underneath,
+    // or step up to the row container itself.
+    const parent = target.parentElement;
+    if (parent) {
+      const parentStyle = window.getComputedStyle(parent);
+      if (
+        (parentStyle.display === 'flex' || parentStyle.display === 'inline-flex') &&
+        parentStyle.flexDirection.startsWith('row')
+      ) {
+        parent.style.setProperty('flex-wrap', 'wrap', 'important');
+      }
+    }
+    return target;
+  }
+
+  /**
+   * Unlocks line-clamp and max-height on Reddit text containers WITHOUT breaking overflow on outer media cards
+   */
+  function unlockTextClampAncestors(el) {
     try {
       let curr = el;
       let depth = 0;
-      while (curr && curr !== document.body && depth < 7) {
+      while (curr && curr !== document.body && depth < 5) {
         if (curr.nodeType === Node.ELEMENT_NODE) {
           const comp = window.getComputedStyle(curr);
-          if (
-            comp.webkitLineClamp !== 'none' ||
-            (comp.maxHeight && comp.maxHeight !== 'none' && parseFloat(comp.maxHeight) < 800) ||
-            comp.overflowY === 'hidden' ||
-            comp.overflow === 'hidden'
-          ) {
-            curr.style.setProperty('max-height', 'none', 'important');
+          if (comp.webkitLineClamp && comp.webkitLineClamp !== 'none') {
             curr.style.setProperty('-webkit-line-clamp', 'unset', 'important');
             curr.style.setProperty('line-clamp', 'unset', 'important');
-            if (comp.overflow === 'hidden' || comp.overflowY === 'hidden') {
-              curr.style.setProperty('overflow', 'visible', 'important');
-            }
+          }
+          if (comp.maxHeight && comp.maxHeight !== 'none' && parseFloat(comp.maxHeight) < 600) {
+            curr.style.setProperty('max-height', 'none', 'important');
           }
         }
-        curr = curr.parentElement || (curr.getRootNode && curr.getRootNode().host);
+        curr = curr.parentElement;
         depth++;
       }
     } catch {}
@@ -455,6 +513,7 @@
       box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
       transition: border-color 0.2s ease;
       box-sizing: border-box;
+      width: 100% !important;
       height: auto !important;
       max-height: none !important;
       overflow: visible !important;
@@ -587,7 +646,7 @@
           meta.badgeEl.textContent = `🛸 ${t.archetype} · SNR ${snrPct}% [${res.modelUsed}]`;
           meta.claimEl.textContent = `Proposition: ${t.claim}`;
           meta.motiveEl.textContent = `Incentive Vector: ${t.motive}`;
-          unlockClippingAncestors(hostEl);
+          unlockTextClampAncestors(hostEl);
         } else {
           meta.badgeEl.textContent = `🛸 STATISTICAL PROPOSITION (${res.error || 'LOCAL'})`;
         }
@@ -629,17 +688,25 @@
 
   function renderTelemetryCard({ element, text }) {
     if (processedBlocks.has(element)) return;
+
+    const insertionTarget = findSafeInsertionTarget(element);
+    if (processedBlocks.has(insertionTarget)) return;
+
     const stats = corpus.analyze(text);
     if (!stats) return;
 
     processedBlocks.add(element);
+    processedBlocks.add(insertionTarget);
     element.setAttribute('data-xeno-source', '1');
 
     const hostEl = document.createElement('div');
     hostEl.setAttribute('data-xeno-host', '1');
+    // `flex: 0 0 100% !important` guarantees the card takes a full horizontal row even inside a flex container
     hostEl.style.cssText = `
       display: block !important;
       width: 100% !important;
+      min-width: 100% !important;
+      flex: 0 0 100% !important;
       height: auto !important;
       max-height: none !important;
       overflow: visible !important;
@@ -647,8 +714,7 @@
       padding: 0 !important;
       border: none !important;
       background: transparent !important;
-      position: relative !important;
-      z-index: 2 !important;
+      box-sizing: border-box !important;
     `;
     const shadow = hostEl.attachShadow({ mode: 'closed' });
 
@@ -715,8 +781,8 @@
       applyElementViewState(element, hostEl);
     });
 
-    element.parentNode?.insertBefore(hostEl, element.nextSibling);
-    unlockClippingAncestors(element);
+    insertionTarget.parentNode?.insertBefore(hostEl, insertionTarget.nextSibling);
+    unlockTextClampAncestors(element);
     applyElementViewState(element, hostEl);
     viewportObserver.observe(hostEl);
 
