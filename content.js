@@ -1,6 +1,6 @@
 /**
- * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.1
- * Guaranteed immediate HUD mount + Shadow DOM isolation + Information-Theoretic NLP.
+ * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.2
+ * Excludes right-rail sidebars (<aside>), headings, and short UI fragments.
  */
 
 (function () {
@@ -106,7 +106,8 @@
       const clean = rawText.replace(/\s+/g, ' ').trim();
       const tokens = this.tokenize(clean);
       const N = tokens.length;
-      if (N < 6) return null;
+      // Require at least 10 substantive tokens to avoid tagging short labels or fragments
+      if (N < 10) return null;
 
       const localTF = new Map();
       for (const t of tokens) {
@@ -165,7 +166,7 @@
             tokens: sTokens,
             vec,
             norm: Math.sqrt(normSq) || 1,
-            priorScore: sTokens.length >= 3 ? infoSum / Math.pow(sTokens.length, 0.75) : 0
+            priorScore: sTokens.length >= 4 ? infoSum / Math.pow(sTokens.length, 0.75) : 0
           };
         });
 
@@ -205,7 +206,7 @@
         let bestIdx = 0;
         let bestVal = -Infinity;
         for (let i = 0; i < K; i++) {
-          if (sentNodes[i].tokens.length >= 3 && centrality[i] > bestVal) {
+          if (sentNodes[i].tokens.length >= 4 && centrality[i] > bestVal) {
             bestVal = centrality[i];
             bestIdx = i;
           }
@@ -228,14 +229,15 @@
   }
 
   // ============================================================================
-  // 2. DOM PROSE DISCOVERY ENGINE
+  // 2. DOM PROSE DISCOVERY ENGINE (EXCLUDES SIDEBARS & ACCORDION HEADERS)
   // ============================================================================
   const NON_PROSE_ANCESTORS = new Set([
     'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'MATH',
     'CODE', 'PRE', 'KBD', 'SAMP', 'VAR', 'INPUT', 'TEXTAREA', 'SELECT',
     'BUTTON', 'LABEL', 'OPTION', 'OPTGROUP', 'DATALIST', 'OUTPUT',
     'AUDIO', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED', 'HEAD', 'TITLE', 'META',
-    'NAV', 'FOOTER', 'HEADER', 'DIALOG', 'MENU', 'THEAD', 'TFOOT'
+    'NAV', 'FOOTER', 'HEADER', 'ASIDE', 'DIALOG', 'MENU', 'THEAD', 'TFOOT',
+    'SUMMARY', 'FIGCAPTION', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6'
   ]);
 
   const INLINE_CONTAINERS = new Set([
@@ -253,7 +255,7 @@
       if (curr.hasAttribute('data-xeno-host') || curr.isContentEditable) return null;
       if (NON_PROSE_ANCESTORS.has(curr.tagName)) return null;
       const role = curr.getAttribute('role');
-      if (role && /^(navigation|banner|menubar|menu|toolbar|tablist|dialog|alertdialog|search)$/i.test(role)) {
+      if (role && /^(navigation|banner|complementary|menubar|menu|toolbar|tablist|dialog|alertdialog|search|heading)$/i.test(role)) {
         return null;
       }
       if (!INLINE_CONTAINERS.has(curr.tagName)) {
@@ -266,15 +268,17 @@
 
   function evaluateBlockMetrics(el) {
     if (!el || processedBlocks.has(el)) return null;
+    if (NON_PROSE_ANCESTORS.has(el.tagName)) return null;
     if (el.hasAttribute('data-xeno-host') || el.closest('[data-xeno-host]')) return null;
 
     let parent = el.parentElement;
     while (parent && parent !== document.body) {
-      if (processedBlocks.has(parent)) return null;
+      if (processedBlocks.has(parent) || NON_PROSE_ANCESTORS.has(parent.tagName)) return null;
+      const role = parent.getAttribute('role');
+      if (role && /^(navigation|complementary|banner|menu|toolbar|dialog)$/i.test(role)) return null;
       parent = parent.parentElement;
     }
 
-    // If this is a generic wrapper div/section that contains explicit <p> or <article> children, skip the wrapper so we process the inner <p> tags directly
     if (el.tagName !== 'P' && el.tagName !== 'BLOCKQUOTE' && el.tagName !== 'LI') {
       if (el.querySelector('p, blockquote, article, section, ul, ol, table')) {
         return null;
@@ -282,15 +286,14 @@
     }
 
     const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (text.length < 45) return null;
+    if (text.length < 55) return null;
 
-    // Filter out navigation link clusters (where >55% of characters are inside <a> tags)
     const anchors = el.getElementsByTagName('a');
     let anchorChars = 0;
     for (let i = 0; i < anchors.length; i++) {
       anchorChars += (anchors[i].textContent || '').replace(/\s+/g, ' ').trim().length;
     }
-    if (anchorChars / text.length > 0.55) return null;
+    if (anchorChars / text.length > 0.5) return null;
 
     return text;
   }
@@ -299,30 +302,19 @@
     if (!root) return [];
     const candidateSet = new Set();
 
-    // Pass 1: Direct semantic prose elements
     if (typeof root.querySelectorAll === 'function') {
       const semanticNodes = root.querySelectorAll('p, blockquote, article li, dd');
       for (let i = 0; i < semanticNodes.length; i++) {
         const el = semanticNodes[i];
         if (!processedBlocks.has(el) && !NON_PROSE_ANCESTORS.has(el.tagName)) {
-          let ancestor = el.parentElement;
-          let skip = false;
-          while (ancestor && ancestor !== document.body) {
-            if (NON_PROSE_ANCESTORS.has(ancestor.tagName) || ancestor.hasAttribute('data-xeno-host')) {
-              skip = true;
-              break;
-            }
-            ancestor = ancestor.parentElement;
-          }
-          if (!skip) candidateSet.add(el);
+          candidateSet.add(el);
         }
       }
     }
 
-    // Pass 2: Bottom-up TextNode discovery for div-based web apps (X/Twitter, Reddit, modern SPAs)
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
-        if (!node.nodeValue || node.nodeValue.trim().length < 25) {
+        if (!node.nodeValue || node.nodeValue.trim().length < 35) {
           return NodeFilter.FILTER_SKIP;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -343,7 +335,8 @@
       if (!validText) continue;
 
       const rect = block.getBoundingClientRect();
-      if (rect.width >= 110 && rect.height >= 16) {
+      // Require minimum 200px width to ignore narrow sidebar columns
+      if (rect.width >= 200 && rect.height >= 18) {
         verified.push({ element: block, text: validText });
       }
     }
@@ -629,7 +622,7 @@
   }
 
   // ============================================================================
-  // 5. SHADOW DOM CONTROL HUD (GUARANTEED VISIBLE FIXED HOST)
+  // 5. SHADOW DOM CONTROL HUD
   // ============================================================================
   const HUD_STYLES = `
     .hud-wrapper {
@@ -974,13 +967,9 @@
     }
   } catch {}
 
-  // ============================================================================
-  // 6. IMMEDIATE BOOTSTRAP (NEVER BLOCKED ON ASYNC IPC)
-  // ============================================================================
   mountHud();
   scheduleIdleScan(document.body);
 
-  // Hydrate saved config asynchronously after UI is already visible
   safeSendMessage({ type: 'XENO_GET_CONFIG' }, (res) => {
     if (res?.ok && res.config) {
       state = { ...state, ...res.config, decodedCount: state.decodedCount };
