@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Xeno-Lens Epistemic Telemetry Engine",
-  "version": "7.1.0",
-  "description": "Production-grade information-theoretic corpus analyzer and multi-provider LLM epistemic telemetry engine.",
+  "name": "Xeno-Lens",
+  "version": "7.5.0",
+  "description": "Epistemic De-Mythologizer for the Web. Shows the core claim, likely motive, and confidence for posts and articles.",
   "permissions": [
     "activeTab",
     "tabs",
@@ -13,15 +13,20 @@
     "<all_urls>"
   ],
   "action": {
-    "default_title": "Toggle Xeno-Lens Telemetry HUD"
+    "default_title": "Turn Xeno-Lens on or off for this tab"
   },
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
