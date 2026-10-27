@@ -56,7 +56,6 @@ Choose Google Gemini, OpenAI, Anthropic, xAI Grok, OpenRouter, Groq, or Local Ol
 - **Manifest V3** extension architecture
 - **Background Service Worker** for robust message routing and request throttling
 - **Content Scripts** with DOM & Shadow DOM piercing for deep feed compatibility
-- **Gemini API (`gemini-3.8-flash`)** for advanced cognitive text analysis
 
 ---
 
