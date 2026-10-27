@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Xeno-Lens</title>
+  <style>
+    body { margin: 0; width: 340px; background: #020617; color: #f8fafc; font: 12px/1.4 ui-sans-serif, system-ui, sans-serif; }
+    main { padding: 12px; display: grid; gap: 8px; }
+    h1 { margin: 0; font: 700 12px/1.2 ui-monospace, monospace; color: #38bdf8; }
+    p { margin: 0; color: #94a3b8; }
+    label { display: grid; gap: 3px; color: #94a3b8; font-size: 10px; letter-spacing: .04em; }
+    input, select, button { font: 12px/1.3 ui-sans-serif, system-ui, sans-serif; border-radius: 6px; border: 1px solid #334155; background: #0b1120; color: #f8fafc; padding: 6px 8px; }
+    button { cursor: pointer; font-weight: 700; }
+    button.primary { background: #0ea5e9; color: #082f49; border-color: #0ea5e9; }
+    .row { display: flex; gap: 6px; align-items: center; }
+    .check { display: flex; gap: 6px; align-items: center; color: #e2e8f0; font-size: 12px; }
+    #status { min-height: 1.2em; color: #94a3b8; }
+    #status.bad { color: #fb7185; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>XENO-LENS</h1>
+    <p>Local cards quote the page and rank terms by surprisal. They do not invent motives. A probe sends that block’s visible text to the provider below. The key stays in the extension.</p>
+    <label>PROVIDER
+      <select id="provider">
+        <option value="gemini">Google Gemini</option>
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic</option>
+        <option value="xai">xAI</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="groq">Groq</option>
+        <option value="ollama">Ollama on 127.0.0.1:11434</option>
+        <option value="custom">Custom OpenAI-compatible HTTPS</option>
+      </select>
+    </label>
+    <label id="endpoint-label">ENDPOINT
+      <input id="endpoint" type="url" placeholder="https://example.com/v1" spellcheck="false" />
+    </label>
+    <label>API KEY
+      <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Unchanged if blank" />
+    </label>
+    <label class="check"><input id="persist" type="checkbox" /> Remember key on this device</label>
+    <label class="check"><input id="clear" type="checkbox" /> Clear stored key</label>
+    <div class="row">
+      <button id="fetch" type="button">Fetch models</button>
+      <span id="key-state"></span>
+    </div>
+    <label>MODEL
+      <input id="model" list="models" placeholder="Fetch or type a model id" spellcheck="false" />
+      <datalist id="models"></datalist>
+    </label>
+    <label>VIEW
+      <select id="view">
+        <option value="annotate">Annotate, leave the page text visible</option>
+        <option value="replace">Replace, hide the source block</option>
+      </select>
+    </label>
+    <label>MAX PROBES PER PAGE
+      <input id="cap" type="number" min="1" max="30" value="8" />
+    </label>
+    <label class="check"><input id="probes" type="checkbox" /> Send viewport specimens to this provider</label>
+    <label class="check"><input id="auto" type="checkbox" /> Arm the lens on pages I visit</label>
+    <button id="save" class="primary" type="button">Save</button>
+    <button id="toggle" type="button">Enable on this tab</button>
+    <p id="status" role="status"></p>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
