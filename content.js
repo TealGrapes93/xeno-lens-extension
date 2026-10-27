@@ -1,18 +1,33 @@
-
-```javascript
 /**
- * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.3
+ * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.4
  * Fixes:
- * 1. Unlocks parent overflow/max-height/line-clamp on Reddit so cards are never clipped at the bottom.
- * 2. Enforces `display: none !important` in REPLACE mode so Reddit/X CSS cannot override it.
- * 3. Scans <aside> sidebars (Reddit Recent Posts, X What's Happening), short tweets/comments (>= 4 words),
- *    and pierces Web Component Shadow DOMs.
+ * 1. Hot-Reload Cleanup: Automatically cleans up orphaned HUD/cards from prior extension reloads
+ *    instead of exiting early when `#xeno-telemetry-hud-host` is already in the DOM.
+ * 2. Crash-proof ShadowRoot boundary traversal.
+ * 3. Unlocks Reddit clipping containers, enforces REPLACE mode with `!important`, and scans sidebars/short posts.
  */
 
 (function () {
   'use strict';
 
-  if (document.getElementById('xeno-telemetry-hud-host')) return;
+  // If the current active instance is already alive and connected to a valid extension runtime, do not double-run
+  if (window.__XENO_ACTIVE_CLEANUP__) {
+    try {
+      window.__XENO_ACTIVE_CLEANUP__();
+    } catch {}
+  }
+
+  // Remove any orphaned HUD or cards left over from a previous extension reload
+  document.querySelectorAll('#xeno-telemetry-hud-host, [data-xeno-host]').forEach((el) => {
+    try { el.remove(); } catch {}
+  });
+  document.querySelectorAll('[data-xeno-source="1"]').forEach((el) => {
+    try {
+      el.removeAttribute('data-xeno-source');
+      el.style.removeProperty('display');
+      el.style.removeProperty('opacity');
+    } catch {}
+  });
 
   // ============================================================================
   // 1. INFORMATION-THEORETIC STATISTICAL NLP ENGINE
@@ -24,15 +39,20 @@
       this.termFreq = new Map();
       this.docFreq = new Map();
 
-      const lang = document.documentElement.lang || navigator.language || 'en';
-      this.wordSegmenter =
-        typeof Intl !== 'undefined' && Intl.Segmenter
-          ? new Intl.Segmenter(lang, { granularity: 'word' })
-          : null;
-      this.sentenceSegmenter =
-        typeof Intl !== 'undefined' && Intl.Segmenter
-          ? new Intl.Segmenter(lang, { granularity: 'sentence' })
-          : null;
+      const lang = (document.documentElement && document.documentElement.lang) || navigator.language || 'en';
+      try {
+        this.wordSegmenter =
+          typeof Intl !== 'undefined' && Intl.Segmenter
+            ? new Intl.Segmenter(lang, { granularity: 'word' })
+            : null;
+        this.sentenceSegmenter =
+          typeof Intl !== 'undefined' && Intl.Segmenter
+            ? new Intl.Segmenter(lang, { granularity: 'sentence' })
+            : null;
+      } catch {
+        this.wordSegmenter = null;
+        this.sentenceSegmenter = null;
+      }
     }
 
     tokenize(text) {
@@ -112,7 +132,6 @@
       const clean = rawText.replace(/\s+/g, ' ').trim();
       const tokens = this.tokenize(clean);
       const N = tokens.length;
-      // Support short tweets, sidebar post titles, and punchy comments (>= 4 words)
       if (N < 4) return null;
 
       const localTF = new Map();
@@ -235,9 +254,8 @@
   }
 
   // ============================================================================
-  // 2. DOM PROSE & SIDEBAR DISCOVERY ENGINE (INCLUDES SIDEBARS & SHORT POSTS)
+  // 2. DOM PROSE & SIDEBAR DISCOVERY ENGINE
   // ============================================================================
-  // Note: ASIDE and H1-H6 are intentionally allowed so sidebar posts/comments and feed titles work!
   const NON_PROSE_ANCESTORS = new Set([
     'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'MATH',
     'CODE', 'PRE', 'KBD', 'SAMP', 'VAR', 'INPUT', 'TEXTAREA', 'SELECT',
@@ -258,16 +276,21 @@
   function findNearestProseBlock(textNode) {
     let curr = textNode.parentElement;
     while (curr && curr !== document.body && curr !== document.documentElement) {
+      if (!curr.tagName) return null;
       if (curr.hasAttribute('data-xeno-host') || curr.isContentEditable) return null;
       if (NON_PROSE_ANCESTORS.has(curr.tagName)) return null;
       const role = curr.getAttribute('role');
       if (role && /^(navigation|banner|menubar|menu|toolbar|tablist|dialog|alertdialog|search)$/i.test(role)) {
         return null;
       }
-      // If text is inside an <a> tag that is a standalone card/post link (like Reddit Recent Posts), use the <a> or its heading container
       if (curr.tagName === 'A') {
         const parent = curr.parentElement;
-        if (parent && /^(H1|H2|H3|H4|H5|H6|P|LI|DIV)$/i.test(parent.tagName) && (parent.innerText || '').trim() === (curr.innerText || '').trim()) {
+        if (
+          parent &&
+          parent.tagName &&
+          /^(H1|H2|H3|H4|H5|H6|P|LI|DIV)$/i.test(parent.tagName) &&
+          (parent.innerText || '').trim() === (curr.innerText || '').trim()
+        ) {
           return parent;
         }
         return curr;
@@ -281,139 +304,138 @@
   }
 
   function evaluateBlockMetrics(el) {
-    if (!el || processedBlocks.has(el)) return null;
-    if (NON_PROSE_ANCESTORS.has(el.tagName)) return null;
-    if (el.hasAttribute('data-xeno-host') || el.closest('[data-xeno-host]')) return null;
+    try {
+      if (!el || !el.tagName || processedBlocks.has(el)) return null;
+      if (NON_PROSE_ANCESTORS.has(el.tagName)) return null;
+      if (el.hasAttribute('data-xeno-host') || (el.closest && el.closest('[data-xeno-host]'))) return null;
 
-    // Do not process if an ancestor or descendant is already processed
-    let parent = el.parentElement;
-    while (parent && parent !== document.body) {
-      if (processedBlocks.has(parent) || NON_PROSE_ANCESTORS.has(parent.tagName)) return null;
-      const role = parent.getAttribute('role');
-      if (role && /^(navigation|banner|menubar|menu|toolbar|dialog)$/i.test(role)) return null;
-      parent = parent.parentElement;
-    }
+      let parent = el.parentElement;
+      while (parent && parent !== document.body) {
+        if (processedBlocks.has(parent) || (parent.tagName && NON_PROSE_ANCESTORS.has(parent.tagName))) return null;
+        const role = parent.getAttribute && parent.getAttribute('role');
+        if (role && /^(navigation|banner|menubar|menu|toolbar|dialog)$/i.test(role)) return null;
+        parent = parent.parentElement;
+      }
 
-    if (el.querySelector('[data-xeno-source="1"]')) return null;
+      if (el.querySelector && el.querySelector('[data-xeno-source="1"]')) return null;
 
-    // If this element contains distinct child paragraphs or list items, let the children be processed individually
-    if (!/^(P|BLOCKQUOTE|H1|H2|H3|H4|H5|H6|A)$/i.test(el.tagName)) {
-      if (el.querySelector('p, blockquote, article, ul, ol, table, [data-testid="tweetText"]')) {
+      if (!/^(P|BLOCKQUOTE|H1|H2|H3|H4|H5|H6|A)$/i.test(el.tagName)) {
+        if (el.querySelector && el.querySelector('p, blockquote, article, ul, ol, table, [data-testid="tweetText"]')) {
+          return null;
+        }
+      }
+
+      const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text.length < 20) return null;
+
+      if (/^(\d+[.,]?\d*[km]?\s*(upvotes?|comments?|views?|likes?|reposts?|retweets?|hours?|days?|ago|\u00b7|\s))+$/i.test(text)) {
         return null;
       }
-    }
 
-    const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (text.length < 20) return null;
+      const anchors = el.getElementsByTagName ? el.getElementsByTagName('a') : [];
+      if (anchors.length >= 4) {
+        let anchorChars = 0;
+        for (let i = 0; i < anchors.length; i++) {
+          anchorChars += (anchors[i].textContent || '').replace(/\s+/g, ' ').trim().length;
+        }
+        if (anchorChars / text.length > 0.75) return null;
+      }
 
-    // Reject pure metadata counters like "11 upvotes · 9 comments" or "728 upvotes · 362 comments"
-    if (/^(\d+[.,]?\d*[km]?\s*(upvotes?|comments?|views?|likes?|reposts?|retweets?|hours?|days?|ago|\u00b7|\s))+$/i.test(text)) {
+      return text;
+    } catch {
       return null;
     }
-
-    // Reject multi-link navigation bars (where 4+ separate links make up >75% of the block)
-    const anchors = el.getElementsByTagName('a');
-    if (anchors.length >= 4) {
-      let anchorChars = 0;
-      for (let i = 0; i < anchors.length; i++) {
-        anchorChars += (anchors[i].textContent || '').replace(/\s+/g, ' ').trim().length;
-      }
-      if (anchorChars / text.length > 0.75) return null;
-    }
-
-    return text;
   }
 
-  function discoverProseBlocks(root) {
-    if (!root) return [];
-    const candidateSet = new Set();
-
-    // Pass 1: Direct semantic prose, social comments, and sidebar post items
-    if (typeof root.querySelectorAll === 'function') {
-      const semanticNodes = root.querySelectorAll(
-        'p, blockquote, article li, dd, [data-testid="tweetText"], [slot="comment"], [slot="text-body"], [slot="title"], aside h3, aside a[href*="/comments/"]'
-      );
-      for (let i = 0; i < semanticNodes.length; i++) {
-        const el = semanticNodes[i];
-        if (!processedBlocks.has(el) && !NON_PROSE_ANCESTORS.has(el.tagName)) {
-          candidateSet.add(el);
-        }
-      }
-    }
-
-    // Pass 2: Bottom-up TextNode discovery across Main DOM & Shadow DOM
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (!node.nodeValue || node.nodeValue.trim().length < 20) {
-          return NodeFilter.FILTER_SKIP;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-
-    let textNode;
-    while ((textNode = walker.nextNode())) {
-      const block = findNearestProseBlock(textNode);
-      if (block && !processedBlocks.has(block)) {
-        candidateSet.add(block);
-      }
-    }
-
-    // Pass 3: Pierce open Shadow DOMs (Reddit Shreddit Web Components)
-    if (typeof root.querySelectorAll === 'function') {
-      const allEls = root.querySelectorAll('*');
-      for (let i = 0; i < allEls.length; i++) {
-        if (allEls[i].shadowRoot && !allEls[i].hasAttribute('data-xeno-host')) {
-          const shadowCandidates = discoverProseBlocks(allEls[i].shadowRoot);
-          for (let j = 0; j < shadowCandidates.length; j++) {
-            candidateSet.add(shadowCandidates[j].element);
+  function collectCandidatesFromRoot(root, candidateSet) {
+    if (!root) return;
+    try {
+      if (typeof root.querySelectorAll === 'function') {
+        const semanticNodes = root.querySelectorAll(
+          'p, blockquote, article li, dd, [data-testid="tweetText"], [slot="comment"], [slot="text-body"], [slot="title"], aside h3, aside a[href*="/comments/"]'
+        );
+        for (let i = 0; i < semanticNodes.length; i++) {
+          const el = semanticNodes[i];
+          if (el && !processedBlocks.has(el) && !NON_PROSE_ANCESTORS.has(el.tagName)) {
+            candidateSet.add(el);
           }
         }
       }
-    }
+
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (!node.nodeValue || node.nodeValue.trim().length < 20) {
+            return NodeFilter.FILTER_SKIP;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+
+      let textNode;
+      while ((textNode = walker.nextNode())) {
+        const block = findNearestProseBlock(textNode);
+        if (block && !processedBlocks.has(block)) {
+          candidateSet.add(block);
+        }
+      }
+
+      if (typeof root.querySelectorAll === 'function') {
+        const allEls = root.querySelectorAll('*');
+        for (let i = 0; i < allEls.length; i++) {
+          const sr = allEls[i].shadowRoot;
+          if (sr && !allEls[i].hasAttribute('data-xeno-host')) {
+            collectCandidatesFromRoot(sr, candidateSet);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  function discoverProseBlocks(root) {
+    const candidateSet = new Set();
+    collectCandidatesFromRoot(root, candidateSet);
 
     const verified = [];
     for (const block of candidateSet) {
       const validText = evaluateBlockMetrics(block);
       if (!validText) continue;
 
-      const rect = block.getBoundingClientRect();
-      // 115px minimum width allows narrow right-hand sidebars (Reddit Recent Posts & X What's Happening)
-      if (rect.width >= 115 && rect.height >= 14) {
-        verified.push({ element: block, text: validText });
-      }
+      try {
+        const rect = block.getBoundingClientRect();
+        if (rect.width >= 115 && rect.height >= 14) {
+          verified.push({ element: block, text: validText });
+        }
+      } catch {}
     }
 
     return verified;
   }
 
-  /**
-   * Unlocks ancestor CSS max-height / line-clamp / overflow:hidden on Reddit & X
-   * so injected telemetry cards never get sliced off at the bottom.
-   */
   function unlockClippingAncestors(el) {
-    let curr = el;
-    let depth = 0;
-    while (curr && curr !== document.body && depth < 7) {
-      if (curr.nodeType === Node.ELEMENT_NODE) {
-        const comp = window.getComputedStyle(curr);
-        if (
-          comp.webkitLineClamp !== 'none' ||
-          (comp.maxHeight && comp.maxHeight !== 'none' && parseFloat(comp.maxHeight) < 800) ||
-          comp.overflowY === 'hidden' ||
-          comp.overflow === 'hidden'
-        ) {
-          curr.style.setProperty('max-height', 'none', 'important');
-          curr.style.setProperty('-webkit-line-clamp', 'unset', 'important');
-          curr.style.setProperty('line-clamp', 'unset', 'important');
-          if (comp.overflow === 'hidden' || comp.overflowY === 'hidden') {
-            curr.style.setProperty('overflow', 'visible', 'important');
+    try {
+      let curr = el;
+      let depth = 0;
+      while (curr && curr !== document.body && depth < 7) {
+        if (curr.nodeType === Node.ELEMENT_NODE) {
+          const comp = window.getComputedStyle(curr);
+          if (
+            comp.webkitLineClamp !== 'none' ||
+            (comp.maxHeight && comp.maxHeight !== 'none' && parseFloat(comp.maxHeight) < 800) ||
+            comp.overflowY === 'hidden' ||
+            comp.overflow === 'hidden'
+          ) {
+            curr.style.setProperty('max-height', 'none', 'important');
+            curr.style.setProperty('-webkit-line-clamp', 'unset', 'important');
+            curr.style.setProperty('line-clamp', 'unset', 'important');
+            if (comp.overflow === 'hidden' || comp.overflowY === 'hidden') {
+              curr.style.setProperty('overflow', 'visible', 'important');
+            }
           }
         }
+        curr = curr.parentElement || (curr.getRootNode && curr.getRootNode().host);
+        depth++;
       }
-      curr = curr.parentElement || (curr.getRootNode && curr.getRootNode().host);
-      depth++;
-    }
+    } catch {}
   }
 
   // ============================================================================
@@ -573,38 +595,36 @@
     );
   }
 
-  /**
-   * Enforces REPLACE vs SPLIT mode using `!important` so Reddit's Shreddit CSS cannot override it.
-   */
   function applyElementViewState(sourceEl, hostEl) {
-    const meta = blockToCardMap.get(hostEl);
-    if (!state.lensActive) {
-      hostEl.style.setProperty('display', 'none', 'important');
-      sourceEl.style.removeProperty('display');
-      sourceEl.style.removeProperty('opacity');
-      return;
-    }
-
-    hostEl.style.setProperty('display', 'block', 'important');
-
-    // Respect manual per-card Toggle Source override if user clicked it
-    if (meta && meta.manualSourceOverride !== null) {
-      if (meta.manualSourceOverride) {
+    try {
+      const meta = blockToCardMap.get(hostEl);
+      if (!state.lensActive) {
+        hostEl.style.setProperty('display', 'none', 'important');
         sourceEl.style.removeProperty('display');
-        sourceEl.style.setProperty('opacity', '1', 'important');
-      } else {
-        sourceEl.style.setProperty('display', 'none', 'important');
+        sourceEl.style.removeProperty('opacity');
+        return;
       }
-      return;
-    }
 
-    if (state.viewMode === 'replace') {
-      sourceEl.style.setProperty('display', 'none', 'important');
-      sourceEl.style.removeProperty('opacity');
-    } else {
-      sourceEl.style.removeProperty('display');
-      sourceEl.style.setProperty('opacity', '0.78', 'important');
-    }
+      hostEl.style.setProperty('display', 'block', 'important');
+
+      if (meta && meta.manualSourceOverride !== null) {
+        if (meta.manualSourceOverride) {
+          sourceEl.style.removeProperty('display');
+          sourceEl.style.setProperty('opacity', '1', 'important');
+        } else {
+          sourceEl.style.setProperty('display', 'none', 'important');
+        }
+        return;
+      }
+
+      if (state.viewMode === 'replace') {
+        sourceEl.style.setProperty('display', 'none', 'important');
+        sourceEl.style.removeProperty('opacity');
+      } else {
+        sourceEl.style.removeProperty('display');
+        sourceEl.style.setProperty('opacity', '0.78', 'important');
+      }
+    } catch {}
   }
 
   function renderTelemetryCard({ element, text }) {
@@ -722,7 +742,7 @@
       pendingRoots.clear();
 
       for (const r of roots) {
-        if (r && (r.isConnected || r === document.body)) {
+        if (r) {
           const candidates = discoverProseBlocks(r);
           for (let i = 0; i < candidates.length; i++) {
             renderTelemetryCard(candidates[i]);
@@ -854,7 +874,8 @@
   let hudRefs = null;
 
   function mountHud() {
-    if (document.getElementById('xeno-telemetry-hud-host')) return;
+    const existing = document.getElementById('xeno-telemetry-hud-host');
+    if (existing) existing.remove();
 
     const hudHost = document.createElement('div');
     hudHost.id = 'xeno-telemetry-hud-host';
@@ -951,6 +972,7 @@
     (document.body || document.documentElement).appendChild(hudHost);
 
     hudRefs = {
+      hudHost,
       modal,
       toggleBtn,
       modeBtn,
@@ -1029,4 +1051,98 @@
 
     toggleBtn.addEventListener('click', toggleLensState);
 
-    modeBtn.ad
+    modeBtn.addEventListener('click', () => {
+      state.viewMode = state.viewMode === 'split' ? 'replace' : 'split';
+      for (const hostEl of activeCards) {
+        const meta = blockToCardMap.get(hostEl);
+        if (meta) meta.manualSourceOverride = null;
+      }
+      safeSendMessage({
+        type: 'XENO_SAVE_CONFIG',
+        config: { viewMode: state.viewMode }
+      });
+      refreshAllCardViews();
+      updateHudCounters();
+    });
+
+    updateHudCounters();
+  }
+
+  function updateHudCounters() {
+    if (!hudRefs) return;
+    hudRefs.toggleBtn.className = `pill ${state.lensActive ? 'toggle-on' : 'toggle-off'}`;
+    hudRefs.toggleBtn.textContent = state.lensActive
+      ? `🛸 XENO: ON (${state.decodedCount})`
+      : `🧠 RAW (${state.decodedCount})`;
+    hudRefs.modeBtn.textContent = state.viewMode === 'replace' ? 'MODE: REPLACE' : 'MODE: SPLIT';
+    hudRefs.cfgBtn.textContent = `⚙️ ${state.provider.toUpperCase()}`;
+  }
+
+  function refreshAllCardViews() {
+    for (const hostEl of activeCards) {
+      const meta = blockToCardMap.get(hostEl);
+      if (meta) {
+        applyElementViewState(meta.sourceEl, hostEl);
+      }
+    }
+  }
+
+  function toggleLensState() {
+    state.lensActive = !state.lensActive;
+    safeSendMessage({
+      type: 'XENO_SAVE_CONFIG',
+      config: { lensActive: state.lensActive }
+    });
+    refreshAllCardViews();
+    updateHudCounters();
+    if (state.lensActive) {
+      scheduleIdleScan(document.body);
+    }
+  }
+
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+      chrome.runtime.onMessage.addListener((msg) => {
+        if (msg?.type === 'XENO_TOGGLE_LENS') {
+          toggleLensState();
+        }
+      });
+    }
+  } catch {}
+
+  const domObserver = new MutationObserver((mutations) => {
+    if (!state.lensActive) return;
+    for (const m of mutations) {
+      for (const added of m.addedNodes) {
+        if (added.nodeType === Node.ELEMENT_NODE && !added.hasAttribute('data-xeno-host')) {
+          scheduleIdleScan(added);
+        }
+      }
+    }
+  });
+
+  window.__XENO_ACTIVE_CLEANUP__ = () => {
+    try { domObserver.disconnect(); } catch {}
+    try { viewportObserver.disconnect(); } catch {}
+  };
+
+  mountHud();
+  scheduleIdleScan(document.body);
+
+  safeSendMessage({ type: 'XENO_GET_CONFIG' }, (res) => {
+    if (res?.ok && res.config) {
+      state = { ...state, ...res.config, decodedCount: state.decodedCount };
+      refreshAllCardViews();
+      updateHudCounters();
+      if (state.lensActive && (state.apiKey || state.provider === 'ollama')) {
+        for (const hostEl of activeCards) {
+          viewportObserver.observe(hostEl);
+        }
+      }
+    }
+  });
+
+  if (document.body) {
+    domObserver.observe(document.body, { childList: true, subtree: true });
+  }
+})();
