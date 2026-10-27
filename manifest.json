@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Xeno-Lens Epistemic Telemetry Engine",
-  "version": "7.0.0",
+  "version": "7.1.0",
   "description": "Production-grade information-theoretic corpus analyzer and multi-provider LLM epistemic telemetry engine.",
   "permissions": [
     "activeTab",
+    "tabs",
     "scripting",
     "storage"
   ],
@@ -15,8 +16,7 @@
     "default_title": "Toggle Xeno-Lens Telemetry HUD"
   },
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
