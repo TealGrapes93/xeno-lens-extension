@@ -1,13 +1,40 @@
 /**
- * Xeno-Lens Telemetry Engine — Service Worker v7.0
- * Features:
- * - Strict JSON Schema enforcement across Gemini, OpenAI-compatible, and Anthropic (via forced tool_choice)
- * - FNV-1a 64-bit Content-Addressable Cache backed by chrome.storage.session
- * - Adaptive AIMD (Additive-Increase/Multiplicative-Decrease) Concurrency & Circuit Breaker
- * - Secure Credential Vault via chrome.storage.local
+ * Xeno-Lens Telemetry Engine — Service Worker v7.1
+ * Includes automatic injection into existing open tabs on install/reload.
  */
 
 'use strict';
+
+// Automatically inject content.js into all currently open tabs upon install or extension reload
+async function injectIntoOpenTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+    for (const tab of tabs) {
+      if (!tab.id || !tab.url || /^(chrome|edge|about|view-source|https?:\/\/chromewebstore\.google\.com)/i.test(tab.url)) {
+        continue;
+      }
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content.js']
+      }).catch(() => {});
+    }
+  } catch {
+    // Ignore tabs query errors during startup
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  injectIntoOpenTabs();
+});
+
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab?.id || !tab.url || /^(edge|chrome|about|file|view-source):/i.test(tab.url)) return;
+  try {
+    await chrome.tabs.sendMessage(tab.id, { type: 'XENO_TOGGLE_LENS' });
+  } catch {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+  }
+});
 
 const TELEMETRY_JSON_SCHEMA = {
   type: 'object',
@@ -61,9 +88,6 @@ const ENDPOINT_MAP = Object.freeze({
   ollama: 'http://localhost:11434/v1'
 });
 
-/**
- * 64-bit FNV-1a Hash for deterministic content-addressable caching
- */
 function fnv1a64(str) {
   let hash = 0xcbf29ce484222325n;
   const prime = 0x100000001b3n;
@@ -74,9 +98,6 @@ function fnv1a64(str) {
   return hash.toString(16).padStart(16, '0');
 }
 
-/**
- * Validates and normalizes parsed telemetry output against strict structural invariants
- */
 function validateTelemetryPayload(rawObj) {
   if (!rawObj || typeof rawObj !== 'object') {
     throw new Error('INVALID_TELEMETRY_PAYLOAD');
@@ -93,9 +114,6 @@ function validateTelemetryPayload(rawObj) {
   return { archetype, claim, motive, confidence };
 }
 
-/**
- * Resilient JSON extractor capable of handling raw JSON or markdown-fenced blocks
- */
 function parseStructuredJson(text) {
   if (typeof text !== 'string' || !text.trim()) {
     throw new Error('EMPTY_MODEL_RESPONSE');
@@ -112,9 +130,6 @@ function parseStructuredJson(text) {
   }
 }
 
-/**
- * Protocol Adapters for Multi-Provider LLM Introspection
- */
 const PROTOCOLS = {
   gemini: {
     listModels: async (apiKey) => {
@@ -273,9 +288,6 @@ const PROTOCOLS = {
   }
 };
 
-/**
- * AIMD (Additive-Increase / Multiplicative-Decrease) Concurrency Scheduler with Circuit Breaker
- */
 class AIMDTelemetryScheduler {
   constructor() {
     this.queue = [];
@@ -361,9 +373,7 @@ async function setSessionCachedTelemetry(cacheKey, payload) {
     if (chrome.storage?.session) {
       await chrome.storage.session.set({ [cacheKey]: payload });
     }
-  } catch {
-    // Session quota exceeded or unavailable; ignore gracefully
-  }
+  } catch {}
 }
 
 async function getStoredConfig() {
@@ -402,7 +412,7 @@ async function executeProbeRequest({ provider, model, apiKey, customEndpoint, te
 
   let targetModel = (model || stored.model || '').trim();
   if (!targetModel) {
-    const cacheId = `${activeProvider}:${ fnv1a64(cleanKey || baseUrl) }`;
+    const cacheId = `${activeProvider}:${fnv1a64(cleanKey || baseUrl)}`;
     if (memoryModelCache.has(cacheId)) {
       targetModel = memoryModelCache.get(cacheId)[0];
     } else {
@@ -459,15 +469,6 @@ async function executeProbeRequest({ provider, model, apiKey, customEndpoint, te
     }
   });
 }
-
-chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab?.id || !tab.url || /^(edge|chrome|about|file|view-source):/i.test(tab.url)) return;
-  try {
-    await chrome.tabs.sendMessage(tab.id, { type: 'XENO_TOGGLE_LENS' });
-  } catch {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-  }
-});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || typeof msg.type !== 'string') return false;
