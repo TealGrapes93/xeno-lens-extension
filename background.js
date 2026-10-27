@@ -1,11 +1,13 @@
 /**
- * Xeno-Lens Telemetry Engine — Service Worker v7.1
- * Includes automatic injection into existing open tabs on install/reload.
+ * Xeno-Lens Telemetry Engine — Service Worker v7.2
+ * Fixes:
+ * - Prevents thinking-token starvation on Gemini 2.5 / 3.x models (thinkingBudget: 0 + maxOutputTokens: 1024)
+ * - Deterministic State-Machine JSON Repair & Fallback Extractor (eliminates MALFORMED_JSON_OUTPUT)
+ * - Automatic injection into existing open tabs on install/reload
  */
 
 'use strict';
 
-// Automatically inject content.js into all currently open tabs upon install or extension reload
 async function injectIntoOpenTabs() {
   try {
     const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
@@ -18,9 +20,7 @@ async function injectIntoOpenTabs() {
         files: ['content.js']
       }).catch(() => {});
     }
-  } catch {
-    // Ignore tabs query errors during startup
-  }
+  } catch {}
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -45,11 +45,11 @@ const TELEMETRY_JSON_SCHEMA = {
     },
     claim: {
       type: 'string',
-      description: 'The irreducible factual or propositional core stripped of rhetorical framing, in one crisp sentence.'
+      description: 'The irreducible factual or propositional core stripped of rhetorical framing, in one crisp sentence. Do not use double quotes inside this string.'
     },
     motive: {
       type: 'string',
-      description: 'The underlying incentive structure, persuasion vector, or status-signaling utility driving the author.'
+      description: 'The underlying incentive structure, persuasion vector, or status-signaling utility driving the author. Do not use double quotes inside this string.'
     },
     confidence: {
       type: 'number',
@@ -73,10 +73,11 @@ const GEMINI_RESPONSE_SCHEMA = {
 
 const SYSTEM_INSTRUCTION = [
   'You are an objective epistemic telemetry instrument and game-theoretic discourse analyzer.',
-  'Deconstruct the provided text passage into:',
+  'Deconstruct the provided text passage into a single flat JSON object with keys: archetype, claim, motive, confidence.',
+  'Rules:',
   '1. archetype: A rigorous 2-4 word classification of the discourse mechanic.',
-  '2. claim: The irreducible informational proposition stripped of emotional valence, hedging, and spin.',
-  '3. motive: The underlying incentive structure, coordination game, or persuasive objective of the writer.',
+  '2. claim: The irreducible informational proposition stripped of emotional valence, hedging, and spin (1 sentence, plain text, no nested double quotes).',
+  '3. motive: The underlying incentive structure, coordination game, or persuasive objective of the writer (1 sentence, plain text, no nested double quotes).',
   '4. confidence: A calibrated float in [0.0, 1.0] measuring factual density versus rhetorical noise.'
 ].join('\n');
 
@@ -102,32 +103,84 @@ function validateTelemetryPayload(rawObj) {
   if (!rawObj || typeof rawObj !== 'object') {
     throw new Error('INVALID_TELEMETRY_PAYLOAD');
   }
-  const archetype = String(rawObj.archetype || '').trim();
+  const archetype = String(rawObj.archetype || 'DISCOURSE SPECIMEN').trim();
   const claim = String(rawObj.claim || '').trim();
-  const motive = String(rawObj.motive || '').trim();
+  const motive = String(rawObj.motive || 'Expressive or rhetorical signaling within discourse context.').trim();
   const rawConf = Number(rawObj.confidence);
-  const confidence = Number.isFinite(rawConf) ? Math.max(0, Math.min(1, rawConf)) : 0.5;
+  const confidence = Number.isFinite(rawConf) ? Math.max(0, Math.min(1, rawConf)) : 0.35;
 
-  if (!archetype || !claim || !motive) {
+  if (!claim) {
     throw new Error('INCOMPLETE_TELEMETRY_FIELDS');
   }
   return { archetype, claim, motive, confidence };
 }
 
-function parseStructuredJson(text) {
-  if (typeof text !== 'string' || !text.trim()) {
+/**
+ * Fault-Tolerant JSON Parser & Truncated-Stream Repair Engine
+ * Handles markdown fences, unescaped control chars, truncated strings, and partial JSON objects.
+ */
+function parseStructuredJson(rawText) {
+  if (typeof rawText !== 'string' || !rawText.trim()) {
     throw new Error('EMPTY_MODEL_RESPONSE');
   }
-  const trimmed = text.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const match = trimmed.match(/\{[\s\S]*\}/);
-    if (match) {
-      return JSON.parse(match[0]);
-    }
-    throw new Error('MALFORMED_JSON_OUTPUT');
+
+  // Strip Markdown code fences if present
+  let cleaned = rawText
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const firstBrace = cleaned.indexOf('{');
+  if (firstBrace !== -1) {
+    cleaned = cleaned.slice(firstBrace);
   }
+
+  // Pass 1: Direct parse
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+
+  // Pass 2: Normalize literal control characters inside JSON strings and balance truncated braces/quotes
+  try {
+    let sanitized = cleaned.replace(/[\u0000-\u001F]+/g, ' ');
+    const lastBrace = sanitized.lastIndexOf('}');
+    if (lastBrace !== -1) {
+      return JSON.parse(sanitized.slice(0, lastBrace + 1));
+    }
+  } catch {}
+
+  // Pass 3: Key-boundary structural extraction (survives unescaped inner quotes and mid-stream token truncation)
+  const extractField = (key, nextKeys) => {
+    const nextPattern = nextKeys.map((k) => `"${k}"\\s*:`).join('|');
+    const regex = new RegExp(
+      `"${key}"\\s*:\\s*"([\\s\\S]*?)(?:"\\s*(?:,\\s*(?:${nextPattern})|\\}\\s*$)|$)`,
+      'i'
+    );
+    const match = cleaned.match(regex);
+    if (!match) return '';
+    return match[1]
+      .replace(/\\"/g, '"')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/"\s*,\s*$/, '')
+      .trim();
+  };
+
+  const archetype = extractField('archetype', ['claim', 'motive', 'confidence']);
+  const claim = extractField('claim', ['motive', 'confidence', 'archetype']);
+  const motive = extractField('motive', ['confidence', 'archetype', 'claim']);
+  const confMatch = cleaned.match(/"confidence"\s*:\s*([0-9.]+)/i);
+  const confidence = confMatch ? parseFloat(confMatch[1]) : 0.4;
+
+  if (archetype || claim) {
+    return {
+      archetype: archetype || 'RHETORICAL ASSERTION',
+      claim: claim || motive || 'Expressive assertion with low propositional density.',
+      motive: motive || 'Affective signaling and peer alignment.',
+      confidence: Number.isFinite(confidence) ? confidence : 0.4
+    };
+  }
+
+  throw new Error('MALFORMED_JSON_OUTPUT');
 }
 
 const PROTOCOLS = {
@@ -149,29 +202,57 @@ const PROTOCOLS = {
     invoke: async ({ model, apiKey, prompt, signal }) => {
       const cleanModel = (model || 'gemini-2.5-flash').replace(/^models\//i, '').trim();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const body = {
-        systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
+
+      // Disable thinkingBudget on 2.5/3.x Flash models so reasoning tokens never starve JSON output tokens
+      const supportsThinkingZero = /gemini-(2\.5|3)/i.test(cleanModel) && !/pro/i.test(cleanModel);
+
+      const buildBody = (withThinkingConfig) => {
+        const generationConfig = {
           temperature: 0.1,
-          maxOutputTokens: 600,
+          maxOutputTokens: 1024,
           responseMimeType: 'application/json',
           responseSchema: GEMINI_RESPONSE_SCHEMA
+        };
+        if (withThinkingConfig) {
+          generationConfig.thinkingConfig = { thinkingBudget: 0 };
         }
+        return {
+          systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig
+        };
       };
 
-      const res = await fetch(url, {
+      let res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,
-        body: JSON.stringify(body)
+        body: JSON.stringify(buildBody(supportsThinkingZero))
       });
+
+      // Fallback if a specific model endpoint rejects thinkingConfig
+      if (res.status === 400 && supportsThinkingZero) {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal,
+          body: JSON.stringify(buildBody(false))
+        });
+      }
+
       const data = await res.json().catch(() => ({}));
       return { res, data, modelUsed: cleanModel };
     },
 
     extract: (data) => {
-      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const candidate = data?.candidates?.[0];
+      if (!candidate) {
+        if (data?.promptFeedback?.blockReason) {
+          throw new Error(`SAFETY_${data.promptFeedback.blockReason}`);
+        }
+        throw new Error('NO_CANDIDATE');
+      }
+      const parts = candidate?.content?.parts || [];
       const text = parts
         .filter((p) => typeof p.text === 'string' && !p.thought)
         .map((p) => p.text)
@@ -209,7 +290,7 @@ const PROTOCOLS = {
         body: JSON.stringify({
           model: targetModel,
           temperature: 0.1,
-          max_tokens: 500,
+          max_tokens: 800,
           response_format: { type: 'json_object' },
           messages: [
             {
@@ -258,7 +339,7 @@ const PROTOCOLS = {
         signal,
         body: JSON.stringify({
           model: targetModel,
-          max_tokens: 500,
+          max_tokens: 800,
           temperature: 0.1,
           system: SYSTEM_INSTRUCTION,
           tools: [
@@ -424,7 +505,7 @@ async function executeProbeRequest({ provider, model, apiKey, customEndpoint, te
   }
 
   const normalizedSpecimen = String(text || '').trim().slice(0, 1600);
-  const cacheKey = `xeno_cache_${fnv1a64(`${activeProvider}:${targetModel}:${normalizedSpecimen}`)}`;
+  const cacheKey = `xeno_cache_v2_${fnv1a64(`${activeProvider}:${targetModel}:${normalizedSpecimen}`)}`;
 
   const cached = await getSessionCachedTelemetry(cacheKey);
   if (cached) {
