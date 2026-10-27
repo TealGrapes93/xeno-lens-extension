@@ -1,440 +1,1024 @@
-// ==UserScript==
-// @name         Xeno-Lens Universal v4.0 (Multi-Provider LLM Edition)
-// @namespace    https://xeno.cortex.universal
-// @version      4.0
-// @description  Works on EVERY webpage with any LLM (Gemini, OpenAI, Claude, Grok, OpenRouter, Groq, or Local Ollama).
-// ==/UserScript==
+/**
+ * Xeno-Lens Epistemic Telemetry Engine — Content Script v7.0
+ *
+ * Mathematical & Systems Foundations:
+ * 1. Tokenization & Segmentation: Native Unicode `Intl.Segmenter` (granularity: 'word' & 'sentence').
+ * 2. Surprisal & Entropy: Laplace-smoothed self-information I(w) = -log2((c(w) + α) / (N + α|V|)),
+ *    Shannon Entropy H(X) in bits/token, and Yule's K lexical characteristic.
+ * 3. Extractive Proposition Synthesis: Graph-based Submodular Sentence Centrality (TextRank + BM25-weighted
+ *    Information Gain with redundancy penalization).
+ * 4. DOM Block Discovery: Bottom-up text-node density clustering with Text-to-Tag Ratio (TTR) and
+ *    Link-Character Density filtering—zero brittle site selectors or layout thrashing.
+ * 5. UI Isolation: Closed Shadow DOM encapsulation for all telemetry cards and HUD controls.
+ */
 
 (function () {
   'use strict';
 
-  if (window.__XENO_UNIVERSAL_V4__) return;
-  window.__XENO_UNIVERSAL_V4__ = true;
+  if (window.__XENO_ENGINE_V7__) return;
+  window.__XENO_ENGINE_V7__ = true;
 
-  let decodedCount = 0;
-  let autoScanEnabled = true;
+  // ============================================================================
+  // 1. INFORMATION-THEORETIC STATISTICAL NLP ENGINE
+  // ============================================================================
+  class InformationTheoreticCorpus {
+    constructor() {
+      this.docCount = 0;
+      this.totalTerms = 0;
+      this.termFreq = new Map();
+      this.docFreq = new Map();
 
-  const DEFAULT_MODELS = {
-    gemini: 'gemini-2.5-flash',
-    openai: 'gpt-4o-mini',
-    anthropic: 'claude-3-5-haiku-latest',
-    xai: 'grok-3-mini',
-    openrouter: 'meta-llama/llama-3.3-70b-instruct',
-    groq: 'llama-3.3-70b-versatile',
-    ollama: 'llama3.2',
-    custom: 'gpt-4o-mini'
-  };
-
-  let config = {
-    provider: localStorage.getItem('xeno_provider') || 'gemini',
-    model: localStorage.getItem('xeno_model') || 'gemini-2.5-flash',
-    apiKey: localStorage.getItem('xeno_gemini_api_key') || localStorage.getItem('xeno_api_key') || '',
-    customEndpoint: localStorage.getItem('xeno_custom_endpoint') || ''
-  };
-
-  function hasLiveModelReady() {
-    return config.provider === 'ollama' || Boolean(config.apiKey);
-  }
-
-  // --- 1. FLOATING CONTROL BAR + MULTI-MODEL MODAL ---
-  const bar = document.createElement('div');
-  bar.id = 'xeno-universal-bar';
-  bar.style.cssText = `
-    position: fixed !important;
-    bottom: 20px !important;
-    right: 14px !important;
-    z-index: 2147483647 !important;
-    display: flex !important;
-    align-items: center !important;
-    gap: 6px !important;
-    background: #0b1120 !important;
-    border: 1.5px solid #38bdf8 !important;
-    border-radius: 999px !important;
-    padding: 6px 10px !important;
-    font-family: -apple-system, BlinkMacSystemFont, monospace !important;
-    font-size: 11px !important;
-    font-weight: 700 !important;
-    color: #f8fafc !important;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.75) !important;
-    user-select: none !important;
-  `;
-
-  const toggleBtn = document.createElement('button');
-  toggleBtn.style.cssText = `all: unset !important; cursor: pointer !important; color: #34d399 !important; padding: 2px 6px !important;`;
-
-  const configBtn = document.createElement('button');
-  configBtn.style.cssText = `all: unset !important; cursor: pointer !important; background: #1e293b !important; padding: 3px 8px !important; border-radius: 999px !important; font-size: 10px !important;`;
-
-  bar.appendChild(toggleBtn);
-  bar.appendChild(configBtn);
-  document.documentElement.appendChild(bar);
-
-  // Settings Modal
-  const modal = document.createElement('div');
-  modal.style.cssText = `
-    position: fixed !important;
-    bottom: 64px !important;
-    right: 14px !important;
-    z-index: 2147483647 !important;
-    width: 310px !important;
-    background: #0b1120 !important;
-    border: 1.5px solid #38bdf8 !important;
-    border-radius: 14px !important;
-    padding: 14px !important;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-    color: #f8fafc !important;
-    font-size: 12px !important;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.85) !important;
-    display: none !important;
-  `;
-
-  modal.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid #1e293b; padding-bottom:6px;">
-      <strong style="color:#38bdf8; font-size:11px; letter-spacing:0.05em; text-transform:uppercase;">🛸 Xeno-Lens Model Router</strong>
-      <span id="xeno-close-modal" style="cursor:pointer; color:#94a3b8; font-size:14px;">✕</span>
-    </div>
-
-    <label style="display:block; color:#94a3b8; font-size:10px; margin-bottom:3px;">PROVIDER</label>
-    <select id="xeno-provider-select" style="width:100%; background:#020617; color:#f8fafc; border:1px solid #334155; border-radius:6px; padding:6px; margin-bottom:8px; font-size:12px;">
-      <option value="gemini">Google Gemini</option>
-      <option value="openai">OpenAI (GPT-4o / o3)</option>
-      <option value="anthropic">Anthropic (Claude)</option>
-      <option value="xai">xAI (Grok)</option>
-      <option value="openrouter">OpenRouter (Any Model)</option>
-      <option value="groq">Groq (Ultra-Fast LPU)</option>
-      <option value="ollama">Local Ollama (localhost:11434)</option>
-      <option value="custom">Custom OpenAI-Compatible URL</option>
-    </select>
-
-    <label style="display:block; color:#94a3b8; font-size:10px; margin-bottom:3px;">MODEL ID</label>
-    <input id="xeno-model-input" type="text" placeholder="e.g. gpt-4o-mini, claude-3-5-haiku-latest"
-      style="width:100%; box-sizing:border-box; background:#020617; color:#38bdf8; border:1px solid #334155; border-radius:6px; padding:6px; margin-bottom:8px; font-size:12px; font-family:monospace;" />
-
-    <label style="display:block; color:#94a3b8; font-size:10px; margin-bottom:3px;">API KEY (Leave blank for Ollama / Local Mode)</label>
-    <input id="xeno-key-input" type="password" placeholder="Paste provider API key..."
-      style="width:100%; box-sizing:border-box; background:#020617; color:#34d399; border:1px solid #334155; border-radius:6px; padding:6px; margin-bottom:8px; font-size:12px; font-family:monospace;" />
-
-    <div id="xeno-custom-url-wrap" style="display:none;">
-      <label style="display:block; color:#94a3b8; font-size:10px; margin-bottom:3px;">CUSTOM ENDPOINT URL</label>
-      <input id="xeno-endpoint-input" type="text" placeholder="https://api.example.com/v1/chat/completions"
-        style="width:100%; box-sizing:border-box; background:#020617; color:#f8fafc; border:1px solid #334155; border-radius:6px; padding:6px; margin-bottom:8px; font-size:11px; font-family:monospace;" />
-    </div>
-
-    <button id="xeno-save-config" style="width:100%; background:#0ea5e9; color:#020617; font-weight:700; border:none; border-radius:6px; padding:7px; cursor:pointer; font-size:12px; margin-top:4px;">
-      Save & Re-Scan Page
-    </button>
-  `;
-  document.documentElement.appendChild(modal);
-
-  function updateBar() {
-    toggleBtn.style.color = autoScanEnabled ? '#34d399' : '#94a3b8';
-    toggleBtn.textContent = autoScanEnabled ? `🛸 XENO: ON (${decodedCount})` : `🧠 RAW (${decodedCount})`;
-    configBtn.style.color = hasLiveModelReady() ? '#38bdf8' : '#94a3b8';
-    configBtn.textContent = hasLiveModelReady()
-      ? `⚙️ ${config.provider.toUpperCase()}`
-      : '⚙️ SET MODEL';
-  }
-
-  toggleBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    autoScanEnabled = !autoScanEnabled;
-    document.querySelectorAll('.xeno-universal-card').forEach(c => {
-      c.style.display = autoScanEnabled ? 'block' : 'none';
-    });
-    document.querySelectorAll('[data-xeno-hidden="1"]').forEach(el => {
-      el.style.display = autoScanEnabled ? 'none' : '';
-    });
-    updateBar();
-    if (autoScanEnabled) scanVisiblePage();
-  });
-
-  const providerSelect = modal.querySelector('#xeno-provider-select');
-  const modelInput = modal.querySelector('#xeno-model-input');
-  const keyInput = modal.querySelector('#xeno-key-input');
-  const endpointInput = modal.querySelector('#xeno-endpoint-input');
-  const customWrap = modal.querySelector('#xeno-custom-url-wrap');
-
-  providerSelect.addEventListener('change', () => {
-    const p = providerSelect.value;
-    modelInput.value = DEFAULT_MODELS[p] || '';
-    customWrap.style.display = (p === 'custom' || p === 'ollama') ? 'block' : 'none';
-    if (p === 'ollama' && !endpointInput.value) {
-      endpointInput.value = 'http://localhost:11434/v1/chat/completions';
+      const lang = document.documentElement.lang || navigator.language || 'en';
+      this.wordSegmenter =
+        typeof Intl !== 'undefined' && Intl.Segmenter
+          ? new Intl.Segmenter(lang, { granularity: 'word' })
+          : null;
+      this.sentenceSegmenter =
+        typeof Intl !== 'undefined' && Intl.Segmenter
+          ? new Intl.Segmenter(lang, { granularity: 'sentence' })
+          : null;
     }
-  });
 
-  configBtn.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const isHidden = modal.style.display === 'none';
-    if (isHidden) {
-      providerSelect.value = config.provider;
-      modelInput.value = config.model;
-      keyInput.value = config.apiKey;
-      endpointInput.value = config.customEndpoint;
-      customWrap.style.display = (config.provider === 'custom' || config.provider === 'ollama') ? 'block' : 'none';
-      modal.style.display = 'block';
-    } else {
-      modal.style.display = 'none';
+    /**
+     * Unicode-aware word tokenization via Intl.Segmenter
+     */
+    tokenize(text) {
+      if (!text) return [];
+      if (this.wordSegmenter) {
+        const tokens = [];
+        for (const seg of this.wordSegmenter.segment(text)) {
+          if (seg.isWordLike) {
+            const norm = seg.segment.toLowerCase();
+            if (norm.length > 1 || /\p{N}/u.test(norm)) {
+              tokens.push(norm);
+            }
+          }
+        }
+        return tokens;
+      }
+      return text.toLowerCase().match(/[\p{L}\p{N}_'-]{2,}|\p{N}+/gu) || [];
     }
-  });
 
-  modal.querySelector('#xeno-close-modal').addEventListener('click', () => {
-    modal.style.display = 'none';
-  });
+    /**
+     * Unicode-aware sentence segmentation via Intl.Segmenter
+     */
+    segmentSentences(text) {
+      if (!text) return [];
+      if (this.sentenceSegmenter) {
+        const out = [];
+        for (const seg of this.sentenceSegmenter.segment(text)) {
+          const s = seg.segment.trim();
+          if (s.length > 0) out.push(s);
+        }
+        return out;
+      }
+      return text
+        .split(/(?<=[.!?])\s+(?=[A-Z0-9"\u201C])/g)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
 
-  modal.querySelector('#xeno-save-config').addEventListener('click', () => {
-    config.provider = providerSelect.value;
-    config.model = modelInput.value.trim() || DEFAULT_MODELS[config.provider];
-    config.apiKey = keyInput.value.trim();
-    config.customEndpoint = endpointInput.value.trim();
+    /**
+     * Laplace-smoothed Shannon Self-Information:
+     * I(w) = -log2( (count(w) + α) / (N + α * |V|) )
+     */
+    tokenSurprisal(token, localTF = 0, localN = 1) {
+      const alpha = 0.5;
+      const vocabSize = Math.max(100, this.termFreq.size);
+      const globalCount = this.termFreq.get(token) || 0;
+      const prob = (globalCount + localTF + alpha) / (this.totalTerms + localN + alpha * vocabSize);
+      return -Math.log2(prob);
+    }
 
-    localStorage.setItem('xeno_provider', config.provider);
-    localStorage.setItem('xeno_model', config.model);
-    localStorage.setItem('xeno_api_key', config.apiKey);
-    localStorage.setItem('xeno_custom_endpoint', config.customEndpoint);
+    /**
+     * Smoothed Inverse Document Frequency (BM25 formulation):
+     * IDF(w) = ln( 1 + (D - df(w) + 0.5) / (df(w) + 0.5) )
+     */
+    tokenIDF(token) {
+      const df = this.docFreq.get(token) || 0;
+      const D = Math.max(1, this.docCount);
+      return Math.log(1 + (D - df + 0.5) / (df + 0.5));
+    }
 
-    modal.style.display = 'none';
-    updateBar();
+    /**
+     * Updates global corpus distributions AFTER scoring a passage to prevent self-masking
+     */
+    ingestTokens(tokens) {
+      this.docCount++;
+      const uniqueInDoc = new Set();
+      for (const t of tokens) {
+        this.termFreq.set(t, (this.termFreq.get(t) || 0) + 1);
+        this.totalTerms++;
+        uniqueInDoc.add(t);
+      }
+      for (const t of uniqueInDoc) {
+        this.docFreq.set(t, (this.docFreq.get(t) || 0) + 1);
+      }
+    }
 
-    // Re-trigger live AI calls on existing cards
-    document.querySelectorAll('.xeno-universal-card').forEach((card) => {
-      if (card.dataset.rawText && hasLiveModelReady()) {
-        const badgeEl = card.querySelector('.xeno-card-badge');
-        const bodyEl = card.querySelector('.xeno-card-body');
-        if (badgeEl && bodyEl) {
-          fetchLiveModelInterpretation(card.dataset.rawText, bodyEl, badgeEl);
+    /**
+     * Computes Yule's K Characteristic (length-invariant vocabulary richness metric)
+     * K = 10^4 * (sum(i^2 * V_i) - N) / N^2
+     */
+    computeYulesK(tfMap, N) {
+      if (N <= 5) return 0;
+      const spectrum = new Map();
+      for (const freq of tfMap.values()) {
+        spectrum.set(freq, (spectrum.get(freq) || 0) + 1);
+      }
+      let sum = 0;
+      for (const [freq, countOfFreq] of spectrum.entries()) {
+        sum += freq * freq * countOfFreq;
+      }
+      return Math.max(0, Math.round((10000 * (sum - N)) / (N * N)));
+    }
+
+    /**
+     * Full passage analysis:
+     * - Computes passage Shannon Entropy H(X)
+     * - Extracts salient terms via TF-Surprisal-IDF product
+     * - Solves Sentence Centrality Graph (TextRank) weighted by Information Density
+     */
+    analyze(rawText) {
+      const clean = rawText.replace(/\s+/g, ' ').trim();
+      const tokens = this.tokenize(clean);
+      const N = tokens.length;
+      if (N < 8) return null;
+
+      // Local term frequencies
+      const localTF = new Map();
+      for (const t of tokens) {
+        localTF.set(t, (localTF.get(t) || 0) + 1);
+      }
+
+      // Passage Shannon Entropy H(X) = -sum P(x) log2 P(x)
+      let shannonEntropy = 0;
+      for (const count of localTF.values()) {
+        const p = count / N;
+        shannonEntropy -= p * Math.log2(p);
+      }
+
+      // Compute token information weights BEFORE ingesting into global corpus
+      const tokenWeights = new Map();
+      const surprisalValues = [];
+      for (const [term, count] of localTF.entries()) {
+        const surprisal = this.tokenSurprisal(term, count, N);
+        const idf = this.tokenIDF(term);
+        // Information gain combines sublinear TF, global surprisal, and structural length prior
+        const tfSublinear = 1 + Math.log(count);
+        const weight = tfSublinear * surprisal * (0.5 + idf);
+        tokenWeights.set(term, { surprisal, weight, count });
+        surprisalValues.push(surprisal);
+      }
+
+      // Now update online corpus statistics
+      this.ingestTokens(tokens);
+
+      // Dynamic structural threshold: 60th percentile of passage surprisal distribution
+      surprisalValues.sort((a, b) => a - b);
+      const q60 = surprisalValues[Math.floor(surprisalValues.length * 0.6)] || 0;
+
+      // Rank salient terms by information weight, filtering out low-information function words
+      const rankedSalient = [];
+      for (const [term, stats] of tokenWeights.entries()) {
+        if (stats.surprisal >= q60 && term.length > 2) {
+          rankedSalient.push({ term, score: stats.weight });
         }
       }
-    });
-  });
+      rankedSalient.sort((a, b) => b.score - a.score);
+      const salientTerms = rankedSalient.slice(0, 6).map((x) => x.term);
 
-  updateBar();
+      // Extractive Proposition Selection via Graph-Based Sentence Centrality (TextRank + Information Density)
+      const sentences = this.segmentSentences(clean);
+      let primaryClause = sentences[0] || clean;
 
-  // --- 2. CONTENT-AWARE LOCAL INTERPRETATION ENGINE ---
-  function interpretLocally(rawText) {
-    const clean = rawText.replace(/\s+/g, ' ').trim();
-    const words = clean.split(' ').filter(Boolean);
-    if (words.length < 7) return null;
+      if (sentences.length > 1) {
+        const sentNodes = sentences.map((text, idx) => {
+          const sTokens = this.tokenize(text);
+          const vec = new Map();
+          let normSq = 0;
+          let infoSum = 0;
+          for (const t of sTokens) {
+            const w = tokenWeights.get(t)?.weight || 1;
+            vec.set(t, (vec.get(t) || 0) + w);
+            infoSum += w;
+          }
+          for (const val of vec.values()) normSq += val * val;
+          return {
+            text,
+            idx,
+            tokens: sTokens,
+            vec,
+            norm: Math.sqrt(normSq) || 1,
+            // Normalize by (length)^0.75 to avoid biasing toward tiny fragments or runaway paragraphs
+            priorScore: sTokens.length >= 4 ? infoSum / Math.pow(sTokens.length, 0.75) : 0
+          };
+        });
 
-    const sentences = clean.split(/(?<=[.!?])\s+/).filter(Boolean);
-    const firstSentence = sentences[0] || clean;
+        const K = sentNodes.length;
+        const centrality = new Float64Array(K).fill(1 / K);
+        const adj = Array.from({ length: K }, () => new Float64Array(K));
 
-    const hasNumbers = /\b(\d+%|\$\d+|\d+\s*(million|billion|years|days|hours|percent|x))\b/i.test(clean);
-    const hasOutrage = /\b(disgusting|pathetic|insane|literally|worst|evil|stupid|idiots|clown|garbage|trash|unacceptable|delusional|disaster|catastrophe|terrifying|shocking)\b/i.test(clean);
-    const hasAuthority = /\b(study|research|experts|scientists|officials|according to|data|report|evidence|proven|architect|senior|years of experience)\b/i.test(clean);
-    const hasPersuasion = /\b(must|should|need to|have to|essential|critical|don't miss|buy|subscribe|join|discover|secret|guaranteed|best)\b/i.test(clean);
-    const hasEgo = (clean.match(/\b(i|me|my|mine|i'm|i've|we|our)\b/gi) || []).length >= 3;
-    const hasHedge = /\b(maybe|perhaps|possibly|might|could|arguably|seem|seems|appear|suggests|reportedly|allegedly|opinion|feels like)\b/i.test(clean);
+        // Build TF-IDF cosine similarity adjacency matrix
+        for (let i = 0; i < K; i++) {
+          for (let j = i + 1; j < K; j++) {
+            let dot = 0;
+            for (const [term, w1] of sentNodes[i].vec.entries()) {
+              const w2 = sentNodes[j].vec.get(term);
+              if (w2) dot += w1 * w2;
+            }
+            const sim = dot / (sentNodes[i].norm * sentNodes[j].norm);
+            adj[i][j] = sim;
+            adj[j][i] = sim;
+          }
+        }
 
-    const stripWords = new Set([
-      'the','a','an','and','or','but','if','then','of','at','by','for','with','about','to','from','in','on','is','are','was','were','be','been','being','have','has','had','do','does','did','it','its','this','that','these','those','very','really','just','literally','actually','basically','totally','completely','absolutely','honestly','frankly'
-    ]);
+        // Power iteration (PageRank with damping d = 0.85 and information-density prior)
+        const damping = 0.85;
+        for (let iter = 0; iter < 12; iter++) {
+          const next = new Float64Array(K);
+          for (let i = 0; i < K; i++) {
+            let incoming = 0;
+            for (let j = 0; j < K; j++) {
+              if (i === j || adj[j][i] === 0) continue;
+              let outSum = 0;
+              for (let k = 0; k < K; k++) outSum += adj[j][k];
+              if (outSum > 0) incoming += (adj[j][i] / outSum) * centrality[j];
+            }
+            next[i] = (1 - damping) * sentNodes[i].priorScore + damping * incoming;
+          }
+          centrality.set(next);
+        }
 
-    const skeletonWords = words.filter(w => {
-      const lw = w.toLowerCase().replace(/[^a-z0-9%$]/g, '');
-      return lw.length > 2 && !stripWords.has(lw);
-    });
+        let bestIdx = 0;
+        let bestVal = -Infinity;
+        for (let i = 0; i < K; i++) {
+          if (sentNodes[i].tokens.length >= 4 && centrality[i] > bestVal) {
+            bestVal = centrality[i];
+            bestIdx = i;
+          }
+        }
+        primaryClause = sentNodes[bestIdx].text;
+      }
 
-    const compressedClaim = skeletonWords.slice(0, 18).join(' ') + (skeletonWords.length > 18 ? '...' : '');
-    const compressionPct = Math.max(12, Math.round((1 - (skeletonWords.length / words.length)) * 100));
+      const lexicalDensity = Math.round((localTF.size / N) * 100);
+      const yulesK = this.computeYulesK(localTF, N);
 
-    let intentLabel = 'INFORMATIONAL BROADCAST';
-    let borderColor = '#38bdf8';
-    let interpretation = '';
-
-    if (hasOutrage) {
-      intentLabel = 'HIGH-AROUSAL EMOTIONAL HOOK';
-      borderColor = '#fb7185';
-      interpretation = `The writer is wrapping a claim ("${firstSentence.slice(0, 85)}...") in alarmist/tribal vocabulary to hijack your amygdala's threat response and force agreement or clicks.`;
-    } else if (hasPersuasion) {
-      intentLabel = 'BEHAVIORAL STEERING / PERSUASION';
-      borderColor = '#f59e0b';
-      interpretation = `This passage uses directive framing ("should/must/need") to nudge your behavior or beliefs toward a target outcome. Stripped of persuasion, the core pitch is: "${compressedClaim}"`;
-    } else if (hasAuthority && hasNumbers) {
-      intentLabel = 'DATA & AUTHORITY ANCHORING';
-      borderColor = '#34d399';
-      interpretation = `High-density factual/quantitative signal. The writer cites metrics or institutional authority to establish credibility around: "${compressedClaim}"`;
-    } else if (hasEgo) {
-      intentLabel = 'FIRST-PERSON NARRATIVE / STATUS SIGNAL';
-      borderColor = '#c084fc';
-      interpretation = `The author centers their own subjective experience or group identity ("I/we/my") to build relatable social proof while discussing: "${compressedClaim}"`;
-    } else if (hasHedge) {
-      intentLabel = 'HEDGED SPECULATION';
-      borderColor = '#fbbf24';
-      interpretation = `Notice the epistemic caution: the writer uses uncertainty qualifiers ("might/could/reportedly") to float a hypothesis without taking full reputational risk: "${compressedClaim}"`;
-    } else {
-      intentLabel = `DE-MYTHOLOGIZED SUMMARY (-${compressionPct}% FLUFF)`;
-      borderColor = '#38bdf8';
-      interpretation = `Stripping ${compressionPct}% of human conversational padding leaves the raw informational payload: "${compressedClaim}"`;
+      return {
+        tokenCount: N,
+        entropyBits: shannonEntropy.toFixed(2),
+        lexicalDensity,
+        yulesK,
+        primaryClause,
+        salientTerms
+      };
     }
-
-    return { intentLabel, borderColor, interpretation, wordCount: words.length };
   }
 
-  // --- 3. UNIVERSAL MULTI-MODEL PROBE (CALLS BACKGROUND.JS ROUTER) ---
-  function fetchLiveModelInterpretation(rawText, cardBodyEl, badgeEl) {
-    if (!hasLiveModelReady()) return;
-    badgeEl.textContent = `🛸 PROBING ${config.provider.toUpperCase()}...`;
+  // ============================================================================
+  // 2. BOTTOM-UP DOM DENSITY ANALYZER (ZERO BRITTLE SELECTORS)
+  // ============================================================================
+  const NON_PROSE_ANCESTORS = new Set([
+    'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG', 'CANVAS', 'MATH',
+    'CODE', 'PRE', 'KBD', 'SAMP', 'VAR', 'INPUT', 'TEXTAREA', 'SELECT',
+    'BUTTON', 'LABEL', 'OPTION', 'OPTGROUP', 'DATALIST', 'OUTPUT',
+    'AUDIO', 'VIDEO', 'IFRAME', 'OBJECT', 'EMBED', 'HEAD', 'TITLE', 'META',
+    'NAV', 'FOOTER', 'HEADER', 'DIALOG', 'MENU', 'THEAD', 'TFOOT'
+  ]);
 
-    const prompt = `You are a sharp, insightful alien cognitive lens helping a human read the web.
-In 1 to 2 crisp, plain-English sentences, explain:
-1) What this text is ACTUALLY saying when stripped of fluff/spin, and
-2) The hidden psychological, commercial, or rhetorical motive behind how it was written.
-Be specific to the exact words provided.
+  const INLINE_CONTAINERS = new Set([
+    'SPAN', 'A', 'EM', 'STRONG', 'B', 'I', 'U', 'S', 'SMALL', 'SUB', 'SUP',
+    'MARK', 'ABBR', 'CITE', 'DFN', 'TIME', 'FONT', 'BDI', 'BDO', 'Q', 'RUBY'
+  ]);
 
-TEXT: "${rawText.slice(0, 700)}"`;
+  const processedBlocks = new WeakSet();
+  const blockToCardMap = new WeakMap();
+  const activeCards = new Set();
 
-    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+  /**
+   * Finds the nearest semantic block container for a text node
+   */
+  function findNearestProseBlock(textNode) {
+    let curr = textNode.parentElement;
+    while (curr && curr !== document.body && curr !== document.documentElement) {
+      if (curr.hasAttribute('data-xeno-host') || curr.isContentEditable) return null;
+      if (NON_PROSE_ANCESTORS.has(curr.tagName)) return null;
+      const role = curr.getAttribute('role');
+      if (role && /^(navigation|banner|menubar|menu|toolbar|tablist|dialog|alertdialog|search)$/i.test(role)) {
+        return null;
+      }
+      if (!INLINE_CONTAINERS.has(curr.tagName)) {
+        return curr;
+      }
+      curr = curr.parentElement;
+    }
+    return null;
+  }
+
+  /**
+   * Evaluates structural prose integrity using Text-to-Tag Ratio and Link-Character Density
+   * without triggering layout reflows until final candidate verification.
+   */
+  function evaluateBlockMetrics(el) {
+    if (!el || processedBlocks.has(el)) return null;
+
+    // Ensure no ancestor or descendant is already processed
+    let parent = el.parentElement;
+    while (parent && parent !== document.body) {
+      if (processedBlocks.has(parent)) return null;
+      parent = parent.parentElement;
+    }
+
+    // Reject blocks that contain other distinct structural prose blocks (prefer leaf prose blocks)
+    const childBlocks = el.querySelectorAll('p, article, section, blockquote, li, dd, td');
+    if (childBlocks.length > 0) return null;
+
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 65) return null;
+
+    // Compute Link-Character Density (ρ_link): ratio of anchor text to total text
+    const anchors = el.getElementsByTagName('a');
+    let anchorChars = 0;
+    for (let i = 0; i < anchors.length; i++) {
+      anchorChars += (anchors[i].textContent || '').replace(/\s+/g, ' ').trim().length;
+    }
+    if (anchorChars / text.length > 0.42) return null;
+
+    // Compute Text-to-Tag Density: prose blocks have high characters-per-child-element
+    const descendantTagCount = el.getElementsByTagName('*').length;
+    if (descendantTagCount > 0 && text.length / descendantTagCount < 14) {
+      return null;
+    }
+
+    return text;
+  }
+
+  /**
+   * Collects candidate leaf prose blocks inside a root using bottom-up TextNode aggregation
+   */
+  function discoverProseBlocks(root) {
+    if (!root) return [];
+    const candidateMap = new Map();
+
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || node.nodeValue.trim().length < 20) {
+          return NodeFilter.FILTER_SKIP;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      const block = findNearestProseBlock(textNode);
+      if (block && !processedBlocks.has(block)) {
+        candidateMap.set(block, (candidateMap.get(block) || 0) + textNode.nodeValue.trim().length);
+      }
+    }
+
+    // Batch read geometry in a single layout pass to eliminate layout thrashing
+    const verified = [];
+    for (const [block, charSum] of candidateMap.entries()) {
+      if (charSum < 65) continue;
+      const validText = evaluateBlockMetrics(block);
+      if (!validText) continue;
+
+      const rect = block.getBoundingClientRect();
+      if (rect.width >= 140 && rect.height >= 20) {
+        verified.push({ element: block, text: validText });
+      }
+    }
+
+    return verified;
+  }
+
+  // ============================================================================
+  // 3. SHADOW DOM TELEMETRY CARD & HUD RENDERER (XSS-PROOF & CSS-ISOLATED)
+  // ============================================================================
+  const CARD_STYLES = `
+    :host {
+      all: initial;
+      display: block;
+      margin: 8px 0 14px 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      line-height: 1.45;
+      color: #f1f5f9;
+    }
+    .card {
+      background: #0b1120;
+      border: 1px solid #1e293b;
+      border-left: 3.5px solid #38bdf8;
+      border-radius: 8px;
+      padding: 10px 13px;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.32);
+      transition: border-color 0.2s ease;
+    }
+    .card[data-tier="high"] { border-left-color: #34d399; }
+    .card[data-tier="mid"]  { border-left-color: #38bdf8; }
+    .card[data-tier="low"]  { border-left-color: #fb7185; }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #38bdf8;
+      text-transform: uppercase;
+    }
+    .card[data-tier="high"] .badge { color: #34d399; }
+    .card[data-tier="low"] .badge  { color: #fb7185; }
+    .metrics {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      color: #64748b;
+    }
+    .toggle-orig {
+      all: unset;
+      cursor: pointer;
+      color: #94a3b8;
+      background: #1e293b;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 9.5px;
+    }
+    .toggle-orig:hover { color: #f8fafc; background: #334155; }
+    .claim {
+      color: #f8fafc;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 5px;
+    }
+    .motive {
+      color: #94a3b8;
+      font-size: 11.5px;
+    }
+  `;
+
+  const corpus = new InformationTheoreticCorpus();
+
+  let state = {
+    lensActive: true,
+    viewMode: 'split',
+    provider: 'gemini',
+    model: '',
+    apiKey: '',
+    customEndpoint: '',
+    decodedCount: 0
+  };
+
+  const viewportObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const hostEl = entry.target;
+        viewportObserver.unobserve(hostEl);
+
+        if (state.lensActive && (state.apiKey || state.provider === 'ollama')) {
+          dispatchLiveProbe(hostEl);
+        }
+      }
+    },
+    { rootMargin: '240px 0px' }
+  );
+
+  function dispatchLiveProbe(hostEl) {
+    const meta = blockToCardMap.get(hostEl);
+    if (!meta || meta.probed) return;
+    meta.probed = true;
+
+    meta.badgeEl.textContent = `🛸 PROBING ${state.provider.toUpperCase()}...`;
+
+    chrome.runtime.sendMessage(
+      {
+        type: 'XENO_EXECUTE_PROBE',
+        provider: state.provider,
+        model: state.model,
+        text: meta.rawText
+      },
+      (res) => {
+        if (chrome.runtime.lastError || !res) {
+          meta.badgeEl.textContent = '🛸 INFORMATION-THEORETIC PROPOSITION (LOCAL)';
+          return;
+        }
+        if (res.ok && res.telemetry) {
+          const t = res.telemetry;
+          const snrPct = Math.round(t.confidence * 100);
+          meta.cardEl.dataset.tier = t.confidence >= 0.7 ? 'high' : t.confidence >= 0.4 ? 'mid' : 'low';
+          meta.badgeEl.textContent = `🛸 ${t.archetype} · SNR ${snrPct}% [${res.modelUsed}]`;
+          meta.claimEl.textContent = `Proposition: ${t.claim}`;
+          meta.motiveEl.textContent = `Incentive Vector: ${t.motive}`;
+        } else {
+          meta.badgeEl.textContent = `🛸 STATISTICAL PROPOSITION (${res.error || 'LOCAL'})`;
+        }
+      }
+    );
+  }
+
+  function applyElementViewState(sourceEl, hostEl) {
+    if (!state.lensActive) {
+      hostEl.style.display = 'none';
+      sourceEl.style.display = '';
+      sourceEl.style.opacity = '';
+      return;
+    }
+    hostEl.style.display = 'block';
+    if (state.viewMode === 'replace') {
+      sourceEl.style.display = 'none';
+      sourceEl.style.opacity = '';
+    } else {
+      sourceEl.style.display = '';
+      sourceEl.style.opacity = '0.78';
+    }
+  }
+
+  function renderTelemetryCard({ element, text }) {
+    if (processedBlocks.has(element)) return;
+    const stats = corpus.analyze(text);
+    if (!stats) return;
+
+    processedBlocks.add(element);
+
+    const hostEl = document.createElement('xeno-telemetry-card');
+    hostEl.setAttribute('data-xeno-host', '1');
+    const shadow = hostEl.attachShadow({ mode: 'closed' });
+
+    const styleEl = document.createElement('style');
+    styleEl.textContent = CARD_STYLES;
+
+    const cardEl = document.createElement('div');
+    cardEl.className = 'card';
+    cardEl.dataset.tier = 'mid';
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'header';
+
+    const badgeEl = document.createElement('span');
+    badgeEl.className = 'badge';
+    badgeEl.textContent = '🛸 INFORMATION-THEORETIC PROPOSITION';
+
+    const metricsEl = document.createElement('div');
+    metricsEl.className = 'metrics';
+
+    const statSpan = document.createElement('span');
+    statSpan.textContent = `N=${stats.tokenCount} · H=${stats.entropyBits}b · K=${stats.yulesK} · L=${stats.lexicalDensity}%`;
+
+    const toggleOrigBtn = document.createElement('button');
+    toggleOrigBtn.className = 'toggle-orig';
+    toggleOrigBtn.textContent = 'Toggle Source';
+    toggleOrigBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const isHidden = element.style.display === 'none';
+      element.style.display = isHidden ? '' : 'none';
+      element.style.opacity = '1';
+    });
+
+    metricsEl.append(statSpan, toggleOrigBtn);
+    headerEl.append(badgeEl, metricsEl);
+
+    const claimEl = document.createElement('div');
+    claimEl.className = 'claim';
+    claimEl.textContent = `Central Clause: "${stats.primaryClause}"`;
+
+    const motiveEl = document.createElement('div');
+    motiveEl.className = 'motive';
+    motiveEl.textContent =
+      stats.salientTerms.length > 0
+        ? `High-Information Terms: ${stats.salientTerms.join(' · ')}`
+        : 'Uniform lexical distribution';
+
+    cardEl.append(headerEl, claimEl, motiveEl);
+    shadow.append(styleEl, cardEl);
+
+    blockToCardMap.set(hostEl, {
+      sourceEl: element,
+      hostEl,
+      cardEl,
+      badgeEl,
+      claimEl,
+      motiveEl,
+      rawText: text,
+      probed: false
+    });
+    activeCards.add(hostEl);
+
+    applyElementViewState(element, hostEl);
+    element.parentNode?.insertBefore(hostEl, element.nextSibling);
+    viewportObserver.observe(hostEl);
+
+    state.decodedCount++;
+    updateHudCounters();
+  }
+
+  // ============================================================================
+  // 4. TIME-SLICED COOPERATIVE SCHEDULER & MUTATION PIPELINE
+  // ============================================================================
+  const pendingRoots = new Set();
+  let scanScheduled = false;
+
+  function scheduleIdleScan(root = document.body) {
+    if (!state.lensActive || !root) return;
+    pendingRoots.add(root);
+    if (scanScheduled) return;
+    scanScheduled = true;
+
+    const runner = (deadline) => {
+      scanScheduled = false;
+      const roots = Array.from(pendingRoots);
+      pendingRoots.clear();
+
+      const candidates = [];
+      for (const r of roots) {
+        if (r.isConnected) {
+          candidates.push(...discoverProseBlocks(r));
+        }
+      }
+
+      let idx = 0;
+      const processChunk = (dl) => {
+        while (idx < candidates.length && (dl.timeRemaining() > 4 || dl.didTimeout)) {
+          renderTelemetryCard(candidates[idx++]);
+        }
+        if (idx < candidates.length) {
+          requestIdleCallback(processChunk, { timeout: 500 });
+        }
+      };
+
+      if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(processChunk, { timeout: 500 });
+      } else {
+        candidates.forEach(renderTelemetryCard);
+      }
+    };
+
+    if (typeof requestIdleCallback === 'function') {
+      requestIdleCallback(runner, { timeout: 400 });
+    } else {
+      setTimeout(() => runner({ timeRemaining: () => 10, didTimeout: true }), 32);
+    }
+  }
+
+  // ============================================================================
+  // 5. SHADOW DOM CONTROL HUD & SECURE CREDENTIAL CONFIGURATION
+  // ============================================================================
+  const HUD_STYLES = `
+    :host {
+      all: initial;
+      position: fixed;
+      bottom: 18px;
+      right: 16px;
+      z-index: 2147483647;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #f8fafc;
+    }
+    .bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #0b1120;
+      border: 1.5px solid #38bdf8;
+      border-radius: 999px;
+      padding: 6px 11px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.8);
+      user-select: none;
+    }
+    button.pill {
+      all: unset;
+      cursor: pointer;
+      padding: 3px 8px;
+      border-radius: 999px;
+      transition: background 0.15s;
+    }
+    button.toggle-on { color: #34d399; }
+    button.toggle-off { color: #94a3b8; }
+    button.mode-btn, button.cfg-btn {
+      background: #1e293b;
+      color: #38bdf8;
+      font-size: 10px;
+    }
+    button.pill:hover { background: #334155; }
+    .modal {
+      position: absolute;
+      bottom: 44px;
+      right: 0;
+      width: 320px;
+      background: #0b1120;
+      border: 1.5px solid #38bdf8;
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.85);
+      display: none;
+      font-size: 12px;
+    }
+    .modal.open { display: block; }
+    .modal-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #1e293b;
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      color: #38bdf8;
+      font-weight: 700;
+    }
+    .close-btn { all: unset; cursor: pointer; color: #94a3b8; padding: 2px 5px; }
+    label {
+      display: block;
+      color: #94a3b8;
+      font-size: 10px;
+      font-weight: 600;
+      margin: 8px 0 3px 0;
+      text-transform: uppercase;
+    }
+    select, input {
+      box-sizing: border-box;
+      width: 100%;
+      background: #020617;
+      color: #f8fafc;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 11.5px;
+      font-family: ui-monospace, monospace;
+    }
+    .row { display: flex; gap: 6px; }
+    .fetch-btn {
+      all: unset;
+      cursor: pointer;
+      background: #1e293b;
+      color: #38bdf8;
+      border: 1px solid #38bdf8;
+      border-radius: 6px;
+      padding: 0 10px;
+      font-size: 10.5px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .save-btn {
+      all: unset;
+      box-sizing: border-box;
+      width: 100%;
+      text-align: center;
+      margin-top: 12px;
+      background: #0ea5e9;
+      color: #020617;
+      font-weight: 700;
+      border-radius: 6px;
+      padding: 7px;
+      cursor: pointer;
+    }
+  `;
+
+  let hudRefs = null;
+
+  function mountHud() {
+    const hudHost = document.createElement('xeno-telemetry-hud');
+    hudHost.setAttribute('data-xeno-host', '1');
+    const shadow = hudHost.attachShadow({ mode: 'closed' });
+
+    const styleEl = document.createElement('style');
+    styleEl.textContent = HUD_STYLES;
+
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+
+    const modalHdr = document.createElement('div');
+    modalHdr.className = 'modal-hdr';
+    const titleSpan = document.createElement('span');
+    titleSpan.textContent = '🛸 MODEL REGISTRY & VAULT';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'close-btn';
+    closeBtn.textContent = '✕';
+    modalHdr.append(titleSpan, closeBtn);
+
+    const provLabel = document.createElement('label');
+    provLabel.textContent = 'Provider';
+    const provSelect = document.createElement('select');
+    for (const [val, label] of [
+      ['gemini', 'Google Gemini'],
+      ['openai', 'OpenAI'],
+      ['anthropic', 'Anthropic Claude'],
+      ['xai', 'xAI Grok'],
+      ['openrouter', 'OpenRouter'],
+      ['groq', 'Groq LPU'],
+      ['ollama', 'Local Ollama']
+    ]) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      provSelect.appendChild(opt);
+    }
+
+    const keyLabel = document.createElement('label');
+    keyLabel.textContent = 'API Key (Stored in Extension Vault)';
+    const keyRow = document.createElement('div');
+    keyRow.className = 'row';
+    const keyInput = document.createElement('input');
+    keyInput.type = 'password';
+    keyInput.placeholder = 'sk-... / AIza...';
+    const fetchBtn = document.createElement('button');
+    fetchBtn.className = 'fetch-btn';
+    fetchBtn.textContent = 'Query Models';
+    keyRow.append(keyInput, fetchBtn);
+
+    const modelLabel = document.createElement('label');
+    modelLabel.textContent = 'Target Model';
+    const modelSelect = document.createElement('select');
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'save-btn';
+    saveBtn.textContent = 'Save to Secure Vault';
+
+    modal.append(modalHdr, provLabel, provSelect, keyLabel, keyRow, modelLabel, modelSelect, saveBtn);
+
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'pill toggle-on';
+
+    const modeBtn = document.createElement('button');
+    modeBtn.className = 'pill mode-btn';
+
+    const cfgBtn = document.createElement('button');
+    cfgBtn.className = 'pill cfg-btn';
+
+    bar.append(toggleBtn, modeBtn, cfgBtn);
+    shadow.append(styleEl, modal, bar);
+    document.documentElement.appendChild(hudHost);
+
+    hudRefs = {
+      modal,
+      toggleBtn,
+      modeBtn,
+      cfgBtn,
+      provSelect,
+      keyInput,
+      fetchBtn,
+      modelSelect
+    };
+
+    function queryModels() {
+      fetchBtn.textContent = 'Loading...';
       chrome.runtime.sendMessage(
         {
-          type: 'XENO_LLM_PROBE',
-          provider: config.provider,
-          model: config.model,
-          apiKey: config.apiKey,
-          customEndpoint: config.customEndpoint,
-          prompt
+          type: 'XENO_FETCH_MODELS',
+          provider: provSelect.value,
+          apiKey: keyInput.value.trim()
         },
         (res) => {
-          if (res && res.ok && res.reply) {
-            badgeEl.textContent = `🛸 ${config.provider.toUpperCase()} (${res.modelUsed || config.model})`;
-            cardBodyEl.textContent = res.reply.trim();
+          modelSelect.replaceChildren();
+          if (res?.ok && Array.isArray(res.models) && res.models.length > 0) {
+            fetchBtn.textContent = `✓ ${res.models.length}`;
+            for (const m of res.models) {
+              const opt = document.createElement('option');
+              opt.value = m;
+              opt.textContent = m;
+              modelSelect.appendChild(opt);
+            }
+            if (state.model && res.models.includes(state.model)) {
+              modelSelect.value = state.model;
+            }
           } else {
-            badgeEl.textContent = `🛸 LOCAL LENS (${res?.error || 'ERR'})`;
+            fetchBtn.textContent = 'Failed';
           }
         }
       );
     }
-  }
 
-  // --- 4. TRANSFORM WEBPAGE ELEMENTS INTO ALIEN CARDS ---
-  function transformElement(el, forceLiveApi = false) {
-    if (!el || el.dataset.xenoDone === '1') return;
-    if (el.closest('.xeno-universal-card') || el.closest('#xeno-universal-bar')) return;
-    if (el.closest('nav, header, footer, button, a, pre, code, script, style, form')) return;
+    fetchBtn.addEventListener('click', queryModels);
+    provSelect.addEventListener('change', queryModels);
+    closeBtn.addEventListener('click', () => modal.classList.remove('open'));
 
-    const rawText = (el.innerText || '').trim();
-    const localRes = interpretLocally(rawText);
-    if (!localRes) return;
-
-    el.dataset.xenoDone = '1';
-    el.dataset.xenoHidden = '1';
-
-    const card = document.createElement('div');
-    card.className = 'xeno-universal-card';
-    card.dataset.rawText = rawText;
-    card.style.cssText = `
-      display: ${autoScanEnabled ? 'block' : 'none'};
-      background: #0b1120 !important;
-      border-left: 3.5px solid ${localRes.borderColor} !important;
-      border-radius: 10px !important;
-      padding: 10px 12px !important;
-      margin: 8px 0 !important;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-      color: #f1f5f9 !important;
-      font-size: 14px !important;
-      line-height: 1.45 !important;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.28) !important;
-      cursor: pointer !important;
-    `;
-
-    const headerRow = document.createElement('div');
-    headerRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;';
-
-    const badge = document.createElement('span');
-    badge.className = 'xeno-card-badge';
-    badge.style.cssText = `font-size:10px; font-weight:800; letter-spacing:0.05em; color:${localRes.borderColor}; text-transform:uppercase;`;
-    badge.textContent = `🛸 ${localRes.intentLabel}`;
-
-    const hint = document.createElement('span');
-    hint.style.cssText = 'font-size:10px; color:#64748b;';
-    hint.textContent = `Tap for original (${localRes.wordCount}w)`;
-
-    headerRow.appendChild(badge);
-    headerRow.appendChild(hint);
-
-    const body = document.createElement('div');
-    body.className = 'xeno-card-body';
-    body.style.cssText = 'color:#f8fafc; font-weight:400;';
-    body.textContent = localRes.interpretation;
-
-    card.appendChild(headerRow);
-    card.appendChild(body);
-
-    let showingOriginal = false;
-    card.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      showingOriginal = !showingOriginal;
-      el.style.display = showingOriginal ? '' : 'none';
-      hint.textContent = showingOriginal ? 'Showing original below' : `Tap for original (${localRes.wordCount}w)`;
-    });
-
-    if (autoScanEnabled) {
-      el.style.display = 'none';
-    }
-    el.parentNode.insertBefore(card, el.nextSibling);
-
-    decodedCount++;
-    updateBar();
-
-    if (hasLiveModelReady() && (forceLiveApi || decodedCount <= 15)) {
-      fetchLiveModelInterpretation(rawText, body, badge);
-    }
-  }
-
-  // --- 5. UNIVERSAL WEBPAGE SCANNER ---
-  function scanRoot(root) {
-    const universalSelectors = [
-      'p',
-      'blockquote',
-      'article li',
-      '[data-testid="tweetText"]',
-      '[data-testid="comment"]',
-      'div[slot="comment"] > div',
-      '.comment-content',
-      '.commtext',
-      '.md > p'
-    ];
-
-    const candidates = root.querySelectorAll(universalSelectors.join(','));
-    candidates.forEach(el => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 120 && rect.height > 18 && rect.top < window.innerHeight + 600) {
-        transformElement(el);
+    cfgBtn.addEventListener('click', () => {
+      const isOpen = modal.classList.toggle('open');
+      if (isOpen) {
+        provSelect.value = state.provider;
+        keyInput.value = state.apiKey;
+        if (state.apiKey || state.provider === 'ollama') queryModels();
       }
     });
 
-    root.querySelectorAll('*').forEach(node => {
-      if (node.shadowRoot) {
-        scanRoot(node.shadowRoot);
-      }
+    saveBtn.addEventListener('click', () => {
+      state.provider = provSelect.value;
+      state.apiKey = keyInput.value.trim();
+      state.model = modelSelect.value || '';
+      chrome.runtime.sendMessage(
+        {
+          type: 'XENO_SAVE_CONFIG',
+          config: {
+            provider: state.provider,
+            apiKey: state.apiKey,
+            model: state.model
+          }
+        },
+        () => {
+          modal.classList.remove('open');
+          updateHudCounters();
+          // Trigger live probes on already-rendered cards if key was just added
+          if (state.apiKey || state.provider === 'ollama') {
+            for (const hostEl of activeCards) {
+              viewportObserver.observe(hostEl);
+            }
+          }
+        }
+      );
     });
+
+    toggleBtn.addEventListener('click', toggleLensState);
+
+    modeBtn.addEventListener('click', () => {
+      state.viewMode = state.viewMode === 'split' ? 'replace' : 'split';
+      chrome.runtime.sendMessage({
+        type: 'XENO_SAVE_CONFIG',
+        config: { viewMode: state.viewMode }
+      });
+      refreshAllCardViews();
+      updateHudCounters();
+    });
+
+    updateHudCounters();
   }
 
-  function scanVisiblePage() {
-    if (!autoScanEnabled) return;
-    scanRoot(document);
+  function updateHudCounters() {
+    if (!hudRefs) return;
+    hudRefs.toggleBtn.className = `pill ${state.lensActive ? 'toggle-on' : 'toggle-off'}`;
+    hudRefs.toggleBtn.textContent = state.lensActive
+      ? `🛸 XENO: ON (${state.decodedCount})`
+      : `🧠 RAW (${state.decodedCount})`;
+    hudRefs.modeBtn.textContent = state.viewMode === 'replace' ? 'MODE: REPLACE' : 'MODE: SPLIT';
+    hudRefs.cfgBtn.textContent = `⚙️ ${state.provider.toUpperCase()}`;
   }
 
-  document.addEventListener('dblclick', (e) => {
-    const target = e.target.closest('p, div, span, li, blockquote');
-    if (target) transformElement(target, true);
+  function refreshAllCardViews() {
+    for (const hostEl of activeCards) {
+      const meta = blockToCardMap.get(hostEl);
+      if (meta) {
+        applyElementViewState(meta.sourceEl, hostEl);
+      }
+    }
+  }
+
+  function toggleLensState() {
+    state.lensActive = !state.lensActive;
+    chrome.runtime.sendMessage({
+      type: 'XENO_SAVE_CONFIG',
+      config: { lensActive: state.lensActive }
+    });
+    refreshAllCardViews();
+    updateHudCounters();
+    if (state.lensActive) {
+      scheduleIdleScan(document.body);
+    }
+  }
+
+  // Listen for toolbar icon toggle
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === 'XENO_TOGGLE_LENS') {
+      toggleLensState();
+    }
   });
 
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
-    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-      if (msg && msg.type === 'XENO_TOOLBAR_TOGGLE') {
-        toggleBtn.click();
-        sendResponse({ status: 'toggled', active: autoScanEnabled });
-      }
-    });
-  }
+  // ============================================================================
+  // 6. INITIALIZATION & MUTATION OBSERVER
+  // ============================================================================
+  chrome.runtime.sendMessage({ type: 'XENO_GET_CONFIG' }, (res) => {
+    if (res?.ok && res.config) {
+      state = { ...state, ...res.config };
+    }
+    mountHud();
+    if (state.lensActive) {
+      scheduleIdleScan(document.body);
+    }
+  });
 
-  scanVisiblePage();
-  window.addEventListener('scroll', () => {
-    window.requestAnimationFrame(scanVisiblePage);
-  }, { passive: true });
-  setInterval(scanVisiblePage, 1500);
+  const domObserver = new MutationObserver((mutations) => {
+    if (!state.lensActive) return;
+    for (const m of mutations) {
+      for (const added of m.addedNodes) {
+        if (added.nodeType === Node.ELEMENT_NODE && !added.hasAttribute('data-xeno-host')) {
+          scheduleIdleScan(added);
+        }
+      }
+    }
+  });
+
+  if (document.body) {
+    domObserver.observe(document.body, { childList: true, subtree: true });
+  }
 })();
