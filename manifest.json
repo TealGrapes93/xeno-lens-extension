@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Xeno-Lens Universal // Multi-Model Epistemic X-Ray",
-  "version": "4.0.0",
-  "description": "Rewrites webpage comments, articles, and paragraphs into informative alien behavioral telemetry using any LLM provider.",
+  "name": "Xeno-Lens Epistemic Telemetry Engine",
+  "version": "7.0.0",
+  "description": "Production-grade information-theoretic corpus analyzer and multi-provider LLM epistemic telemetry engine.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -12,16 +12,18 @@
     "<all_urls>"
   ],
   "action": {
-    "default_title": "Click to Toggle Xeno-Lens on this page"
+    "default_title": "Toggle Xeno-Lens Telemetry HUD"
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ]
 }
