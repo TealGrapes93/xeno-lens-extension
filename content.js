@@ -139,141 +139,70 @@
      * - Extracts salient terms via TF-Surprisal-IDF product
      * - Solves Sentence Centrality Graph (TextRank) weighted by Information Density
      */
-    analyze(rawText) {
-      const clean = rawText.replace(/\s+/g, ' ').trim();
-      const tokens = this.tokenize(clean);
-      const N = tokens.length;
-      if (N < 8) return null;
+    function analyze(text) {
+  const lang = document.documentElement.lang || navigator.language || 'en';
+  const segmenters = segmentersFor(lang);
+  const clean = normalize(text);
+  const tokens = tokenize(clean, segmenters.word);
+  if (tokens.length < MIN_TOKENS) return null;
 
-      // Local term frequencies
-      const localTF = new Map();
-      for (const t of tokens) {
-        localTF.set(t, (localTF.get(t) || 0) + 1);
-      }
+  const scored = model.warm
+    ? tokens.map((token) => ({ token, bits: model.surprisal(token) }))
+    : leaveOneOut(tokens);
+  const bitsOf = new Map();
+  for (const item of scored) {
+    const prev = bitsOf.get(item.token);
+    if (prev === undefined || item.bits > prev) bitsOf.set(item.token, item.bits);
+  }
+  const bits = scored.map((item) => item.bits);
+  const mid = median(bits);
+  const seen = new Set();
+  const salient = [];
+  scored.forEach((item, index) => {
+    if (item.bits < mid || seen.has(item.token)) return;
+    seen.add(item.token);
+    salient.push({ token: item.token, bits: item.bits, index });
+  });
+  salient.sort((a, b) => b.bits - a.bits || a.index - b.index);
 
-      // Passage Shannon Entropy H(X) = -sum P(x) log2 P(x)
-      let shannonEntropy = 0;
-      for (const count of localTF.values()) {
-        const p = count / N;
-        shannonEntropy -= p * Math.log2(p);
-      }
+  const sentenceBits = (sentence) => {
+    const sentenceTokens = tokenize(sentence, segmenters.word);
+    if (sentenceTokens.length < MIN_SENTENCE_TOKENS) return null;
+    const local = model.warm ? null : leaveOneOut(sentenceTokens);
+    const localBits = new Map();
+    if (local) for (const item of local) localBits.set(item.token, item.bits);
+    let sum = 0;
+    for (const token of sentenceTokens) {
+      sum += model.warm ? model.surprisal(token) : localBits.get(token);
+    }
+    return { mean: sum / sentenceTokens.length, length: sentenceTokens.length };
+  };
 
-      // Compute token information weights BEFORE ingesting into global corpus
-      const tokenWeights = new Map();
-      const surprisalValues = [];
-      for (const [term, count] of localTF.entries()) {
-        const surprisal = this.tokenSurprisal(term, count, N);
-        const idf = this.tokenIDF(term);
-        // Information gain combines sublinear TF, global surprisal, and structural length prior
-        const tfSublinear = 1 + Math.log(count);
-        const weight = tfSublinear * surprisal * (0.5 + idf);
-        tokenWeights.set(term, { surprisal, weight, count });
-        surprisalValues.push(surprisal);
-      }
-
-      // Now update online corpus statistics
-      this.ingestTokens(tokens);
-
-      // Dynamic structural threshold: 60th percentile of passage surprisal distribution
-      surprisalValues.sort((a, b) => a - b);
-      const q60 = surprisalValues[Math.floor(surprisalValues.length * 0.6)] || 0;
-
-      // Rank salient terms by information weight, filtering out low-information function words
-      const rankedSalient = [];
-      for (const [term, stats] of tokenWeights.entries()) {
-        if (stats.surprisal >= q60 && term.length > 2) {
-          rankedSalient.push({ term, score: stats.weight });
-        }
-      }
-      rankedSalient.sort((a, b) => b.score - a.score);
-      const salientTerms = rankedSalient.slice(0, 6).map((x) => x.term);
-
-      // Extractive Proposition Selection via Graph-Based Sentence Centrality (TextRank + Information Density)
-      const sentences = this.segmentSentences(clean);
-      let primaryClause = sentences[0] || clean;
-
-      if (sentences.length > 1) {
-        const sentNodes = sentences.map((text, idx) => {
-          const sTokens = this.tokenize(text);
-          const vec = new Map();
-          let normSq = 0;
-          let infoSum = 0;
-          for (const t of sTokens) {
-            const w = tokenWeights.get(t)?.weight || 1;
-            vec.set(t, (vec.get(t) || 0) + w);
-            infoSum += w;
-          }
-          for (const val of vec.values()) normSq += val * val;
-          return {
-            text,
-            idx,
-            tokens: sTokens,
-            vec,
-            norm: Math.sqrt(normSq) || 1,
-            // Normalize by (length)^0.75 to avoid biasing toward tiny fragments or runaway paragraphs
-            priorScore: sTokens.length >= 4 ? infoSum / Math.pow(sTokens.length, 0.75) : 0
-          };
-        });
-
-        const K = sentNodes.length;
-        const centrality = new Float64Array(K).fill(1 / K);
-        const adj = Array.from({ length: K }, () => new Float64Array(K));
-
-        // Build TF-IDF cosine similarity adjacency matrix
-        for (let i = 0; i < K; i++) {
-          for (let j = i + 1; j < K; j++) {
-            let dot = 0;
-            for (const [term, w1] of sentNodes[i].vec.entries()) {
-              const w2 = sentNodes[j].vec.get(term);
-              if (w2) dot += w1 * w2;
-            }
-            const sim = dot / (sentNodes[i].norm * sentNodes[j].norm);
-            adj[i][j] = sim;
-            adj[j][i] = sim;
-          }
-        }
-
-        // Power iteration (PageRank with damping d = 0.85 and information-density prior)
-        const damping = 0.85;
-        for (let iter = 0; iter < 12; iter++) {
-          const next = new Float64Array(K);
-          for (let i = 0; i < K; i++) {
-            let incoming = 0;
-            for (let j = 0; j < K; j++) {
-              if (i === j || adj[j][i] === 0) continue;
-              let outSum = 0;
-              for (let k = 0; k < K; k++) outSum += adj[j][k];
-              if (outSum > 0) incoming += (adj[j][i] / outSum) * centrality[j];
-            }
-            next[i] = (1 - damping) * sentNodes[i].priorScore + damping * incoming;
-          }
-          centrality.set(next);
-        }
-
-        let bestIdx = 0;
-        let bestVal = -Infinity;
-        for (let i = 0; i < K; i++) {
-          if (sentNodes[i].tokens.length >= 4 && centrality[i] > bestVal) {
-            bestVal = centrality[i];
-            bestIdx = i;
-          }
-        }
-        primaryClause = sentNodes[bestIdx].text;
-      }
-
-      const lexicalDensity = Math.round((localTF.size / N) * 100);
-      const yulesK = this.computeYulesK(localTF, N);
-
-      return {
-        tokenCount: N,
-        entropyBits: shannonEntropy.toFixed(2),
-        lexicalDensity,
-        yulesK,
-        primaryClause,
-        salientTerms
-      };
+  let primary = '';
+  let best = -Infinity;
+  let bestLength = -1;
+  for (const part of segmenters.sentence.segment(clean)) {
+    const sentence = part.segment.trim();
+    const score = sentenceBits(sentence);
+    if (!score) continue;
+    if (score.mean > best || (score.mean === best && score.length > bestLength)) {
+      best = score.mean;
+      bestLength = score.length;
+      primary = sentence;
     }
   }
+
+  return {
+    tokens,
+    tokenCount: tokens.length,
+    typeTokenRatio: new Set(tokens).size / tokens.length,
+    meanBits: bits.reduce((sum, value) => sum + value, 0) / bits.length,
+    primaryClause: primary || clean,
+    salientTerms: salient.slice(0, 8).map((item) => item.token),
+    estimator: model.warm ? 'background' : 'leave-one-out',
+    segmenters
+  };
+}
 
   // ============================================================================
   // 2. BOTTOM-UP DOM DENSITY ANALYZER (ZERO BRITTLE SELECTORS)
